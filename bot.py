@@ -435,6 +435,91 @@ def save_attendance_record(date, lessons, student, status, reason):
         print(f"Ошибка сохранения: {e}")
         return 0
 
+# ==================== СОЗДАНИЕ КЛАВИАТУРЫ СТУДЕНТОВ ====================
+def create_students_markup(students, existing_marks, page, selected_students):
+    """Создаёт клавиатуру со списком студентов (без отправки сообщения)"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    selected_count = len(selected_students)
+    if selected_count > 0:
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                f"✅ ПРИМЕНИТЬ К ВЫБРАННЫМ ({selected_count})",
+                callback_data="apply_to_selected"
+            )
+        )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Все присутствуют", callback_data="mark_all_present"),
+        telebot.types.InlineKeyboardButton("❌ Все отсутствуют", callback_data="mark_all_absent")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("🤒 Все болеют", callback_data="mark_all_sick"),
+        telebot.types.InlineKeyboardButton("📄 Все уважительная", callback_data="mark_all_valid")
+    )
+    
+    total_students = len(students)
+    total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    
+    if page < 0:
+        page = 0
+    elif page >= total_pages:
+        page = total_pages - 1
+    
+    start = page * ITEMS_PER_PAGE
+    end = min(start + ITEMS_PER_PAGE, total_students)
+    
+    for idx_in_list in range(start, end):
+        student = students[idx_in_list]
+        if len(student) >= 2:
+            student_name = student[1]
+            
+            if student_name in existing_marks:
+                status_info = existing_marks[student_name]
+                status_text = status_info['status']
+                status_emoji = '❓'
+                for code, info in STATUSES.items():
+                    if info['text'] == status_text:
+                        status_emoji = info['emoji']
+                        break
+                if status_info.get('reason') and status_info['reason'] != '-':
+                    status_emoji = f"{status_emoji}📝"
+            else:
+                status_emoji = '⬜'
+            
+            checkbox = "☑️" if idx_in_list in selected_students else "◻️"
+            
+            display_name = student_name
+            if len(display_name) > 12:
+                display_name = display_name[:12] + "…"
+            
+            markup.add(
+                telebot.types.InlineKeyboardButton(
+                    f"{checkbox} {status_emoji} {display_name}",
+                    callback_data=f"toggle_{idx_in_list}"
+                )
+            )
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(telebot.types.InlineKeyboardButton("◀ Предыдущая", callback_data="page_prev"))
+    if page < total_pages - 1:
+        nav_buttons.append(telebot.types.InlineKeyboardButton("Следующая ▶", callback_data="page_next"))
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("❌ Снять все выборы", callback_data="clear_selection"),
+        telebot.types.InlineKeyboardButton("🔄 Обновить", callback_data="refresh_list")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("💾 СОХРАНИТЬ И ВЫЙТИ", callback_data="save_exit")
+    )
+    
+    return markup
+
 # ==================== ОТМЕТКА СТУДЕНТОВ С ЧЕКБОКСАМИ ====================
 def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=None):
     """Показывает список студентов с чекбоксами для множественного выбора"""
@@ -459,80 +544,9 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
         page = total_pages - 1
     user['current_page'] = page
     
-    start = page * ITEMS_PER_PAGE
-    end = min(start + ITEMS_PER_PAGE, total_students)
-    
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup = create_students_markup(students, existing_marks, page, user['selected_students'])
     
     selected_count = len(user['selected_students'])
-    if selected_count > 0:
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                f"✅ ПРИМЕНИТЬ К ВЫБРАННЫМ ({selected_count})",
-                callback_data="apply_to_selected"
-            )
-        )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ Все присутствуют", callback_data="mark_all_present"),
-        telebot.types.InlineKeyboardButton("❌ Все отсутствуют", callback_data="mark_all_absent")
-    )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("🤒 Все болеют", callback_data="mark_all_sick"),
-        telebot.types.InlineKeyboardButton("📄 Все уважительная", callback_data="mark_all_valid")
-    )
-    
-    for idx_in_list in range(start, end):
-        student = students[idx_in_list]
-        if len(student) >= 2:
-            student_name = student[1]
-            
-            if student_name in existing_marks:
-                status_info = existing_marks[student_name]
-                status_text = status_info['status']
-                status_emoji = '❓'
-                for code, info in STATUSES.items():
-                    if info['text'] == status_text:
-                        status_emoji = info['emoji']
-                        break
-                if status_info.get('reason') and status_info['reason'] != '-':
-                    status_emoji = f"{status_emoji}📝"
-            else:
-                status_emoji = '⬜'
-            
-            checkbox = "☑️" if idx_in_list in user['selected_students'] else "◻️"
-            
-            display_name = student_name
-            if len(display_name) > 12:
-                display_name = display_name[:12] + "…"
-            
-            markup.add(
-                telebot.types.InlineKeyboardButton(
-                    f"{checkbox} {status_emoji} {display_name}",
-                    callback_data=f"toggle_{idx_in_list}"
-                )
-            )
-    
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(telebot.types.InlineKeyboardButton("◀ Предыдущая", callback_data="page_prev"))
-    if page < total_pages - 1:
-        nav_buttons.append(telebot.types.InlineKeyboardButton("Следующая ▶", callback_data="page_next"))
-    if nav_buttons:
-        markup.add(*nav_buttons)
-    
-    page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("❌ Снять все выборы", callback_data="clear_selection"),
-        telebot.types.InlineKeyboardButton("🔄 Обновить", callback_data="refresh_list")
-    )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("💾 СОХРАНИТЬ И ВЫЙТИ", callback_data="save_exit")
-    )
-    
     selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
     
     # Информация о выбранных парах
@@ -540,6 +554,8 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
     if user.get('selected_lessons'):
         selected_lessons = sorted(user['selected_lessons'])
         lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+    
+    page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
     bot.send_message(
         chat_id,
@@ -611,7 +627,7 @@ def mark_students(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('toggle_'))
 def toggle_student(call):
-    """Выбор/снятие выбора студента"""
+    """Выбор/снятие выбора студента (обновление сообщения без удаления)"""
     user = get_user_data(call.message.chat.id)
     idx = int(call.data.split('_')[1])
     
@@ -630,16 +646,44 @@ def toggle_student(call):
             if student not in existing_marks:
                 existing_marks[student] = data
     
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
+    # Обновляем существующее сообщение
+    markup = create_students_markup(students, existing_marks, user['current_page'], user['selected_students'])
+    selected_count = len(user['selected_students'])
+    selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
     
-    show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, user['current_page'])
+    # Информация о выбранных парах
+    lessons_text = ""
+    if user.get('selected_lessons'):
+        selected_lessons = sorted(user['selected_lessons'])
+        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+    
+    page = user['current_page']
+    total_students = len(students)
+    total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
+             f"👥 *Группа:* {GROUP_NAME}\n"
+             f"📅 *Дата:* {user['current_date']}\n"
+             f"{lessons_text}"
+             f"{selected_text}"
+             f"{page_info}\n\n"
+             f"*Как отмечать:*\n"
+             f"1. Нажмите на студента, чтобы выбрать ☑️\n"
+             f"2. Выберите статус для ВСЕХ выбранных\n"
+             f"3. Или отметьте всю группу сразу\n\n"
+             f"*Статусы:* ✅ ❌ 🤒 📄 ❓\n"
+             f"*⬜ - не отмечен, 📝 - есть причина*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'clear_selection')
 def clear_selection(call):
-    """Снять все выборы"""
+    """Снять все выборы (обновление сообщения без удаления)"""
     user = get_user_data(call.message.chat.id)
     user['selected_students'] = set()
     bot.answer_callback_query(call.id, "❌ Все выборы сняты")
@@ -652,12 +696,38 @@ def clear_selection(call):
             if student not in existing_marks:
                 existing_marks[student] = data
     
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
+    # Обновляем существующее сообщение
+    markup = create_students_markup(students, existing_marks, user['current_page'], user['selected_students'])
     
-    show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, user['current_page'])
+    # Информация о выбранных парах
+    lessons_text = ""
+    if user.get('selected_lessons'):
+        selected_lessons = sorted(user['selected_lessons'])
+        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+    
+    page = user['current_page']
+    total_students = len(students)
+    total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
+             f"👥 *Группа:* {GROUP_NAME}\n"
+             f"📅 *Дата:* {user['current_date']}\n"
+             f"{lessons_text}"
+             f"✅ *Выбрано:* 0 студентов\n"
+             f"{page_info}\n\n"
+             f"*Как отмечать:*\n"
+             f"1. Нажмите на студента, чтобы выбрать ☑️\n"
+             f"2. Выберите статус для ВСЕХ выбранных\n"
+             f"3. Или отметьте всю группу сразу\n\n"
+             f"*Статусы:* ✅ ❌ 🤒 📄 ❓\n"
+             f"*⬜ - не отмечен, 📝 - есть причина*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'apply_to_selected')
 def apply_to_selected(call):
@@ -733,7 +803,7 @@ def apply_status_to_selected(call):
                 )
     
     user['selected_students'] = set()
-    bot.answer_callback_query(call.id, f"✅ Отмечено {len(user['selected_students'])} студентов")
+    bot.answer_callback_query(call.id, f"✅ Отмечено студентов")
     
     students = user.get('students_list', [])
     existing_marks = {}
@@ -743,12 +813,45 @@ def apply_status_to_selected(call):
             if student not in existing_marks:
                 existing_marks[student] = data
     
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
+    # Возвращаемся к списку
+    back_to_list_with_data(call.message.chat.id, call.message.message_id, students, existing_marks)
+
+def back_to_list_with_data(chat_id, message_id, students, existing_marks):
+    """Возврат к списку студентов с обновлением сообщения"""
+    user = get_user_data(chat_id)
     
-    show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, user['current_page'])
+    markup = create_students_markup(students, existing_marks, user['current_page'], user['selected_students'])
+    selected_count = len(user['selected_students'])
+    selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
+    
+    lessons_text = ""
+    if user.get('selected_lessons'):
+        selected_lessons = sorted(user['selected_lessons'])
+        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+    
+    page = user['current_page']
+    total_students = len(students)
+    total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
+    
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
+             f"👥 *Группа:* {GROUP_NAME}\n"
+             f"📅 *Дата:* {user['current_date']}\n"
+             f"{lessons_text}"
+             f"{selected_text}"
+             f"{page_info}\n\n"
+             f"*Как отмечать:*\n"
+             f"1. Нажмите на студента, чтобы выбрать ☑️\n"
+             f"2. Выберите статус для ВСЕХ выбранных\n"
+             f"3. Или отметьте всю группу сразу\n\n"
+             f"*Статусы:* ✅ ❌ 🤒 📄 ❓\n"
+             f"*⬜ - не отмечен, 📝 - есть причина*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 def save_reason_for_selected(message):
     """Сохраняет причину для всех выбранных студентов"""
@@ -822,12 +925,8 @@ def mark_all_students(call):
                 if student not in existing_marks:
                     existing_marks[student] = data
         
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-        
-        show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, user['current_page'])
+        # Обновляем сообщение
+        back_to_list_with_data(call.message.chat.id, call.message.message_id, students, existing_marks)
         
     except Exception as e:
         bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
@@ -976,12 +1075,10 @@ def refresh_students_list(chat_id, message_id=None):
                     existing_marks[student] = data
         
         if message_id:
-            try:
-                bot.delete_message(chat_id, message_id)
-            except:
-                pass
-        
-        show_students_list_with_checkboxes(chat_id, students, existing_marks, user.get('current_page', 0))
+            # Обновляем сообщение
+            back_to_list_with_data(chat_id, message_id, students, existing_marks)
+        else:
+            show_students_list_with_checkboxes(chat_id, students, existing_marks, user.get('current_page', 0))
         
     except Exception as e:
         bot.send_message(chat_id, f"❌ Ошибка обновления: {e}")
@@ -1013,22 +1110,52 @@ def page_prev(call):
     user = get_user_data(call.message.chat.id)
     current_page = user.get('current_page', 0)
     if current_page > 0:
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
         students = user.get('students_list', [])
         if not students:
             all_students = students_sheet.get_all_values()
             students = all_students[1:] if len(all_students) > 1 else []
             user['students_list'] = students
+        
         existing_marks = {}
         for lesson in user['selected_lessons']:
             marks = get_existing_marks(user['current_date'], lesson)
             for student, data in marks.items():
                 if student not in existing_marks:
                     existing_marks[student] = data
-        show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, page=current_page - 1)
+        
+        # Обновляем сообщение
+        user['current_page'] = current_page - 1
+        markup = create_students_markup(students, existing_marks, current_page - 1, user['selected_students'])
+        
+        selected_count = len(user['selected_students'])
+        selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
+        
+        lessons_text = ""
+        if user.get('selected_lessons'):
+            selected_lessons = sorted(user['selected_lessons'])
+            lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+        
+        total_pages = (len(students) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+        page_info = f"📄 Страница {current_page} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
+        
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
+                 f"👥 *Группа:* {GROUP_NAME}\n"
+                 f"📅 *Дата:* {user['current_date']}\n"
+                 f"{lessons_text}"
+                 f"{selected_text}"
+                 f"{page_info}\n\n"
+                 f"*Как отмечать:*\n"
+                 f"1. Нажмите на студента, чтобы выбрать ☑️\n"
+                 f"2. Выберите статус для ВСЕХ выбранных\n"
+                 f"3. Или отметьте всю группу сразу\n\n"
+                 f"*Статусы:* ✅ ❌ 🤒 📄 ❓\n"
+                 f"*⬜ - не отмечен, 📝 - есть причина*",
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
     else:
         bot.answer_callback_query(call.id, "Вы на первой странице")
 
@@ -1038,18 +1165,47 @@ def page_next(call):
     current_page = user.get('current_page', 0)
     students = user.get('students_list', [])
     total_pages = (len(students) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    
     if current_page < total_pages - 1:
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
         existing_marks = {}
         for lesson in user['selected_lessons']:
             marks = get_existing_marks(user['current_date'], lesson)
             for student, data in marks.items():
                 if student not in existing_marks:
                     existing_marks[student] = data
-        show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, page=current_page + 1)
+        
+        # Обновляем сообщение
+        user['current_page'] = current_page + 1
+        markup = create_students_markup(students, existing_marks, current_page + 1, user['selected_students'])
+        
+        selected_count = len(user['selected_students'])
+        selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
+        
+        lessons_text = ""
+        if user.get('selected_lessons'):
+            selected_lessons = sorted(user['selected_lessons'])
+            lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+        
+        page_info = f"📄 Страница {current_page + 2} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
+        
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
+                 f"👥 *Группа:* {GROUP_NAME}\n"
+                 f"📅 *Дата:* {user['current_date']}\n"
+                 f"{lessons_text}"
+                 f"{selected_text}"
+                 f"{page_info}\n\n"
+                 f"*Как отмечать:*\n"
+                 f"1. Нажмите на студента, чтобы выбрать ☑️\n"
+                 f"2. Выберите статус для ВСЕХ выбранных\n"
+                 f"3. Или отметьте всю группу сразу\n\n"
+                 f"*Статусы:* ✅ ❌ 🤒 📄 ❓\n"
+                 f"*⬜ - не отмечен, 📝 - есть причина*",
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
     else:
         bot.answer_callback_query(call.id, "Вы на последней странице")
 
@@ -1344,6 +1500,7 @@ if __name__ == "__main__":
     print(f"📍 Группа: {GROUP_NAME}")
     print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Множественный выбор студентов - АКТИВЕН")
+    print(f"✅ Обновление сообщений без удаления - АКТИВНО")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
     for i in range(1, 7):
