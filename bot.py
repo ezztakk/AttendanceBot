@@ -24,21 +24,39 @@ UNRESPECTFUL_STATUSES = ['Отсутствовал']  # ❌
 ITEMS_PER_PAGE = 10
 # ===================================================
 
-# ==================== КЭШИРОВАНИЕ ====================
+# ==================== БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ СООБЩЕНИЙ ====================
+def safe_edit_message(chat_id, message_id, text, reply_markup=None, parse_mode='Markdown'):
+    """Безопасное обновление сообщения - игнорирует ошибку 'message is not modified'"""
+    try:
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            # Игнорируем эту ошибку - сообщение уже актуально
+            pass
+        else:
+            print(f"⚠️ Ошибка при редактировании: {e}")
+# ====================================================
+
+# ==================== БАЗОВОЕ КЭШИРОВАНИЕ ====================
 class SheetsCache:
-    """Кэш для данных Google Sheets с защитой от превышения квоты"""
+    """Базовый кэш для данных Google Sheets"""
     def __init__(self):
         self.students_cache = []
         self.students_timestamp = 0
         self.attendance_cache = {}
         self.attendance_timestamp = {}
-        self.cache_ttl = 30  # Время жизни кэша в секундах
+        self.cache_ttl = 30
         self.lock = Lock()
         self.max_retries = 5
         self.base_delay = 1
     
     def _safe_call(self, func, *args, **kwargs):
-        """Безопасный вызов API с повторными попытками"""
         for attempt in range(self.max_retries):
             try:
                 return func(*args, **kwargs)
@@ -56,7 +74,6 @@ class SheetsCache:
                     raise e
     
     def get_students(self):
-        """Получить список студентов с кэшированием"""
         with self.lock:
             current_time = time.time()
             if not self.students_cache or current_time - self.students_timestamp > self.cache_ttl:
@@ -72,14 +89,12 @@ class SheetsCache:
             return self.students_cache
     
     def get_attendance(self, date, lesson):
-        """Получить отметки для даты и пары с кэшированием"""
         key = f"{date}_{lesson}"
         with self.lock:
             current_time = time.time()
             if key not in self.attendance_cache or current_time - self.attendance_timestamp.get(key, 0) > self.cache_ttl:
                 try:
                     records = self._safe_call(attendance_sheet.get_all_records)
-                    # Фильтруем записи для конкретной даты и пары
                     filtered = {}
                     for record in records:
                         if (str(record.get('Дата', '')) == date and
@@ -101,7 +116,6 @@ class SheetsCache:
             return self.attendance_cache[key]
     
     def clear_attendance_cache(self, date=None, lesson=None):
-        """Очистить кэш отметок"""
         with self.lock:
             if date and lesson:
                 key = f"{date}_{lesson}"
@@ -120,12 +134,49 @@ class SheetsCache:
                 print("🗑️ Очищен весь кэш отметок")
     
     def clear_students_cache(self):
-        """Очистить кэш студентов"""
         with self.lock:
             self.students_cache = []
             self.students_timestamp = 0
             print("🗑️ Очищен кэш студентов")
 
+# ==================== УЛУЧШЕННОЕ КЭШИРОВАНИЕ ====================
+class ImprovedSheetsCache(SheetsCache):
+    """Улучшенный кэш с принудительным ожиданием между запросами"""
+    
+    def __init__(self):
+        super().__init__()
+        self.last_request_time = 0
+        self.min_request_interval = 1.1  # Минимум 1.1 секунда между запросами (<60 в минуту)
+    
+    def _wait_for_rate_limit(self):
+        """Принудительное ожидание для соблюдения квоты"""
+        now = time.time()
+        time_since_last = now - self.last_request_time
+        if time_since_last < self.min_request_interval:
+            wait_time = self.min_request_interval - time_since_last
+            time.sleep(wait_time)
+        self.last_request_time = time.time()
+    
+    def _safe_call(self, func, *args, **kwargs):
+        """Безопасный вызов API с ожиданием и повторными попытками"""
+        self._wait_for_rate_limit()
+        
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_str = str(e)
+                if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                    if attempt < self.max_retries - 1:
+                        delay = self.base_delay * (4 ** attempt)
+                        print(f"⚠️ Квота API превышена. Ожидание {delay} сек... (попытка {attempt + 1}/{self.max_retries})")
+                        time.sleep(delay)
+                        self._wait_for_rate_limit()
+                    else:
+                        print("❌ Исчерпаны все попытки вызова API")
+                        raise
+                else:
+                    raise
 # ====================================================
 
 # Расписание пар
@@ -170,9 +221,9 @@ try:
     students_sheet = spreadsheet.worksheet("Студенты")
     print("✅ Google Таблица подключена!")
     
-    # Инициализируем кэш
-    cache = SheetsCache()
-    print("✅ Система кэширования запущена")
+    # Инициализируем улучшенный кэш
+    cache = ImprovedSheetsCache()
+    print("✅ Улучшенная система кэширования запущена")
     
 except Exception as e:
     print(f"❌ Ошибка подключения к Google: {e}")
@@ -299,7 +350,7 @@ def handle_date_selection(call):
         user['current_date'] = new_date
         bot.answer_callback_query(call.id, f"✅ Дата выбрана: {new_date}")
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"📅 *Дата установлена:* {user['current_date']}\n\n"
@@ -421,7 +472,7 @@ def toggle_lesson(call):
     selected = user['selected_lessons']
     selected_text = f"✅ *Выбрано пар:* {len(selected)}" if selected else "❌ *Ничего не выбрано*"
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"🔢 *ВЫБОР ПАР*\n\n"
@@ -444,7 +495,7 @@ def lessons_all(call):
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = {1, 2, 3, 4, 5, 6}
     bot.answer_callback_query(call.id, "✅ Выбраны все пары")
-    toggle_lesson(call)  # Обновляем отображение
+    toggle_lesson(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_clear')
 def lessons_clear(call):
@@ -452,7 +503,7 @@ def lessons_clear(call):
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = set()
     bot.answer_callback_query(call.id, "❌ Выбор очищен")
-    toggle_lesson(call)  # Обновляем отображение
+    toggle_lesson(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_done')
 def lessons_done(call):
@@ -468,7 +519,7 @@ def lessons_done(call):
     
     bot.answer_callback_query(call.id, f"✅ Выбраны пары: {selected_text}")
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"✅ *Настройки установлены*\n\n"
@@ -496,7 +547,8 @@ def save_attendance_record(date, lessons, student, status, reason):
         else:
             lesson_list = [lessons]
         
-        # Получаем все записи ОДИН РАЗ
+        # Получаем все записи ОДИН РАЗ с задержкой
+        time.sleep(1.1)  # Принудительная задержка перед чтением
         records = attendance_sheet.get_all_values()
         
         # Собираем строки для удаления
@@ -685,6 +737,17 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
         reply_markup=markup
     )
 
+# ==================== БЕЗОПАСНОЕ ПОЛУЧЕНИЕ СТУДЕНТА ====================
+def get_student_by_index(user, idx):
+    """Безопасное получение студента по индексу"""
+    if 'students_list' not in user:
+        return None
+    if idx >= len(user['students_list']):
+        return None
+    if len(user['students_list'][idx]) < 2:
+        return None
+    return user['students_list'][idx][1]
+
 # ==================== ОБРАБОТЧИКИ ДЛЯ ОТМЕТКИ ====================
 @bot.message_handler(func=lambda message: message.text == '📝 Отметить студентов')
 def mark_students(message):
@@ -742,6 +805,12 @@ def toggle_student(call):
     user = get_user_data(call.message.chat.id)
     idx = int(call.data.split('_')[1])
     
+    # Защита от невалидного индекса
+    if idx >= len(user.get('students_list', [])):
+        bot.answer_callback_query(call.id, "❌ Данные устарели, обновите список")
+        refresh_students_list(call.message.chat.id, call.message.message_id)
+        return
+    
     if idx in user['selected_students']:
         user['selected_students'].remove(idx)
         bot.answer_callback_query(call.id, "❌ Выбор снят")
@@ -773,7 +842,7 @@ def toggle_student(call):
     total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
@@ -821,7 +890,7 @@ def clear_selection(call):
     total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
@@ -863,7 +932,7 @@ def apply_to_selected(call):
         telebot.types.InlineKeyboardButton("↩️ Назад", callback_data="back_to_list")
     )
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"📝 *Применить статус к выбранным студентам*\n\n"
@@ -903,11 +972,11 @@ def apply_status_to_selected(call):
         return
     else:
         for idx in user['selected_students']:
-            if idx < len(user['students_list']):
-                student_name = user['students_list'][idx][1]
+            student_name = get_student_by_index(user, idx)
+            if student_name:
                 save_attendance_record(
                     user['current_date'], 
-                    user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                    user['selected_lessons'],
                     student_name, 
                     info['text'], 
                     "-"
@@ -924,7 +993,6 @@ def apply_status_to_selected(call):
             if student not in existing_marks:
                 existing_marks[student] = data
     
-    # Возвращаемся к списку
     back_to_list_with_data(call.message.chat.id, call.message.message_id, students, existing_marks)
 
 def back_to_list_with_data(chat_id, message_id, students, existing_marks):
@@ -945,7 +1013,7 @@ def back_to_list_with_data(chat_id, message_id, students, existing_marks):
     total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=chat_id,
         message_id=message_id,
         text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
@@ -976,11 +1044,11 @@ def save_reason_for_selected(message):
     pending = user['pending_status']
     
     for idx in pending['students']:
-        if idx < len(user['students_list']):
-            student_name = user['students_list'][idx][1]
+        student_name = get_student_by_index(user, idx)
+        if student_name:
             save_attendance_record(
                 user['current_date'],
-                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                user['selected_lessons'],
                 student_name,
                 pending['status_text'],
                 reason
@@ -1020,7 +1088,7 @@ def mark_all_students(call):
                 student_name = student[1]
                 save_attendance_record(
                     user['current_date'], 
-                    user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                    user['selected_lessons'],
                     student_name, 
                     info['text'], 
                     "-"
@@ -1036,7 +1104,6 @@ def mark_all_students(call):
                 if student not in existing_marks:
                     existing_marks[student] = data
         
-        # Обновляем сообщение
         back_to_list_with_data(call.message.chat.id, call.message.message_id, students, existing_marks)
         
     except Exception as e:
@@ -1053,7 +1120,7 @@ def mark_all_sick(call):
         telebot.types.InlineKeyboardButton("❌ Отмена", callback_data="back_to_list")
     )
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"⚠️ *Отметить ВСЕХ студентов как болеющих?*\n\n"
@@ -1088,7 +1155,7 @@ def save_all_sick_with_reason(message):
         if len(student) >= 2:
             save_attendance_record(
                 user['current_date'],
-                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                user['selected_lessons'],
                 student[1],
                 'Болел',
                 reason
@@ -1135,7 +1202,7 @@ def save_all_valid_with_reason(message):
         if len(student) >= 2:
             save_attendance_record(
                 user['current_date'],
-                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                user['selected_lessons'],
                 student[1],
                 'Уважительная причина',
                 reason
@@ -1171,7 +1238,6 @@ def refresh_students_list(chat_id, message_id=None):
     user = get_user_data(chat_id)
     
     try:
-        # Используем кэшированный список студентов
         all_students = cache.get_students()
         students = all_students[1:] if len(all_students) > 1 else []
         
@@ -1179,7 +1245,6 @@ def refresh_students_list(chat_id, message_id=None):
         user['students_list'] = students
         user['selected_students'] = {idx for idx in old_selection if idx < len(students)}
         
-        # Получаем отметки с кэшированием
         existing_marks = {}
         for lesson in user['selected_lessons']:
             marks = get_existing_marks(user['current_date'], lesson)
@@ -1206,7 +1271,7 @@ def save_and_exit(call):
     selected_lessons = sorted(user['selected_lessons'])
     lessons_text = ", ".join(map(str, selected_lessons)) if selected_lessons else "не выбраны"
     
-    bot.edit_message_text(
+    safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"✅ *Данные сохранены!*\n\n"
@@ -1235,7 +1300,6 @@ def page_prev(call):
                 if student not in existing_marks:
                     existing_marks[student] = data
         
-        # Обновляем сообщение
         user['current_page'] = current_page - 1
         markup = create_students_markup(students, existing_marks, current_page - 1, user['selected_students'])
         
@@ -1250,7 +1314,7 @@ def page_prev(call):
         total_pages = (len(students) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
         page_info = f"📄 Страница {current_page} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
         
-        bot.edit_message_text(
+        safe_edit_message(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
@@ -1286,7 +1350,6 @@ def page_next(call):
                 if student not in existing_marks:
                     existing_marks[student] = data
         
-        # Обновляем сообщение
         user['current_page'] = current_page + 1
         markup = create_students_markup(students, existing_marks, current_page + 1, user['selected_students'])
         
@@ -1300,7 +1363,7 @@ def page_next(call):
         
         page_info = f"📄 Страница {current_page + 2} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
         
-        bot.edit_message_text(
+        safe_edit_message(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
@@ -1338,7 +1401,7 @@ def save_new_student(message):
                 return
         
         students_sheet.append_row([GROUP_NAME, name])
-        cache.clear_students_cache()  # Очищаем кэш студентов
+        cache.clear_students_cache()
         
         bot.send_message(message.chat.id,
                         f"✅ *Студент добавлен!*\n\n"
@@ -1365,7 +1428,6 @@ def get_report_menu(message):
 def generate_monthly_report(message):
     """Генерирует отчёт с правильным выделением прогулов"""
     try:
-        # Определяем месяц
         if message.text.lower() == 'текущий':
             month_year = datetime.date.today().strftime("%m.%Y")
         else:
@@ -1373,7 +1435,7 @@ def generate_monthly_report(message):
         
         month, year = map(int, month_year.split('.'))
         
-        # Получаем данные (без кэша для отчёта - нужны актуальные данные)
+        time.sleep(1.1)
         records = attendance_sheet.get_all_records()
         if not records:
             bot.send_message(message.chat.id, "📭 Нет данных для отчёта")
@@ -1382,7 +1444,6 @@ def generate_monthly_report(message):
         df = pd.DataFrame(records)
         df['Дата'] = pd.to_datetime(df['Дата'], format='%d.%m.%Y', errors='coerce')
         
-        # Фильтруем по месяцу
         mask = (df['Дата'].dt.month == month) & (df['Дата'].dt.year == year)
         filtered = df[mask]
         
@@ -1390,11 +1451,9 @@ def generate_monthly_report(message):
             bot.send_message(message.chat.id, f"📭 Нет данных за {month_year}")
             return
         
-        # Получаем список студентов (с кэшем)
         all_students_data = cache.get_students()
         all_students = [s[1] for s in all_students_data[1:] if len(s) >= 2]
         
-        # ========== 1. ЛИСТ ПОСЕЩАЕМОСТИ (СТУДЕНТЫ × ДАТЫ) ==========
         all_dates = sorted(filtered['Дата'].dt.strftime('%d.%m.%Y').unique())
         
         attendance_matrix = []
@@ -1424,9 +1483,7 @@ def generate_monthly_report(message):
         
         df_attendance = pd.DataFrame(attendance_matrix)
         
-        # ========== 2. ЛИСТ СТАТИСТИКИ ==========
         stats_data = []
-        
         for student in all_students:
             student_records = filtered[filtered['Студент'] == student]
             
@@ -1452,7 +1509,6 @@ def generate_monthly_report(message):
         
         df_stats = pd.DataFrame(stats_data)
         
-        # ========== 3. ЛИСТ ИТОГОВ ==========
         total_unexcused = df_stats['❌ ПРОГУЛ (неуваж.)'].sum()
         students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛ (неуваж.)'] > 0])
         
@@ -1477,27 +1533,22 @@ def generate_monthly_report(message):
         
         df_summary = pd.DataFrame(summary_data)
         
-        # ========== 4. СОЗДАЁМ EXCEL ==========
         output = BytesIO()
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Записываем листы
             df_attendance.to_excel(writer, sheet_name='Посещаемость', index=False)
             df_stats.to_excel(writer, sheet_name='Статистика', index=False)
             df_summary.to_excel(writer, sheet_name='Итоги', index=False)
             
-            # Причины пропусков
             reasons_df = filtered[filtered['Причина'] != '-']
             if not reasons_df.empty:
                 reasons_df = reasons_df[['Дата', 'Пара', 'Студент', 'Статус', 'Причина']]
                 reasons_df.to_excel(writer, sheet_name='Причины', index=False)
             
-            # ========== ФОРМАТИРОВАНИЕ ==========
             workbook = writer.book
             worksheet_att = writer.sheets['Посещаемость']
             worksheet_stats = writer.sheets['Статистика']
             
-            # Заголовки (жирные, с фоном)
             header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
             header_font = Font(color='FFFFFF', bold=True)
             
@@ -1508,7 +1559,6 @@ def generate_monthly_report(message):
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal='center')
             
-            # Ширина столбцов
             worksheet_stats.column_dimensions['A'].width = 25
             worksheet_stats.column_dimensions['B'].width = 15
             worksheet_stats.column_dimensions['C'].width = 18
@@ -1518,7 +1568,6 @@ def generate_monthly_report(message):
             worksheet_stats.column_dimensions['G'].width = 15
             worksheet_stats.column_dimensions['H'].width = 15
             
-            # Красный фон только для прогулов
             red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
             red_font = Font(color='9C0006', bold=True)
             
@@ -1528,24 +1577,20 @@ def generate_monthly_report(message):
                     cell.fill = red_fill
                     cell.font = red_font
             
-            # Форматирование листа посещаемости
             worksheet_att.column_dimensions['A'].width = 25
             for col in range(2, len(all_dates) + 2):
                 col_letter = get_column_letter(col)
                 worksheet_att.column_dimensions[col_letter].width = 12
             
-            # Форматирование листа итогов
             worksheet_summary = writer.sheets['Итоги']
             worksheet_summary.column_dimensions['A'].width = 35
             worksheet_summary.column_dimensions['B'].width = 20
             
-            # Автофильтр
             worksheet_stats.auto_filter.ref = worksheet_stats.dimensions
             worksheet_att.auto_filter.ref = worksheet_att.dimensions
         
         output.seek(0)
         
-        # Текстовая сводка
         caption = (
             f"📊 *ОТЧЁТ ЗА {month_year}*\n\n"
             f"👥 *Группа:* {GROUP_NAME}\n"
@@ -1557,7 +1602,6 @@ def generate_monthly_report(message):
             f"*Болезнь и уважительные причины НЕ считаются прогулами*"
         )
         
-        # Отправляем файл
         bot.send_chat_action(message.chat.id, 'upload_document')
         bot.send_document(
             message.chat.id,
@@ -1577,7 +1621,6 @@ def generate_monthly_report(message):
 def show_current_settings(message):
     user = get_user_data(message.chat.id)
     
-    # Формируем текст о выбранных парах
     if user.get('selected_lessons'):
         selected = sorted(user['selected_lessons'])
         lessons_text = ", ".join(map(str, selected))
@@ -1587,7 +1630,6 @@ def show_current_settings(message):
         time_slots = "   не выбраны"
     
     try:
-        # Используем кэшированный список студентов
         all_students = cache.get_students()
         student_count = max(0, len(all_students) - 1)
     except:
@@ -1615,7 +1657,8 @@ if __name__ == "__main__":
     print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Множественный выбор студентов - АКТИВЕН")
     print(f"✅ Обновление сообщений без удаления - АКТИВНО")
-    print(f"✅ КЭШИРОВАНИЕ API - АКТИВНО")
+    print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
+    print(f"✅ Защита от ошибки 'message not modified' - АКТИВНА")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
