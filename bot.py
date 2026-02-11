@@ -5,6 +5,8 @@ import datetime
 import pandas as pd
 from io import BytesIO
 import os
+import openpyxl
+from openpyxl.utils import get_column_letter
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -974,6 +976,7 @@ def generate_monthly_report(message):
         all_students = [s[1] for s in all_students_data[1:] if len(s) >= 2]
         all_dates = sorted(filtered['Дата'].dt.strftime('%d.%m.%Y').unique())
         
+        # ========== 1. Посещаемость (Студенты × Даты) ==========
         attendance_matrix = []
         
         for student in all_students:
@@ -1002,6 +1005,7 @@ def generate_monthly_report(message):
         
         df_attendance = pd.DataFrame(attendance_matrix)
         
+        # ========== 2. Статистика прогулов ==========
         stats_data = []
         
         for student in all_students:
@@ -1014,6 +1018,8 @@ def generate_monthly_report(message):
             excused = len(student_records[student_records['Статус'] == 'Уважительная причина'])
             other = len(student_records[student_records['Статус'] == 'Иная причина'])
             
+            attendance_rate = round(present / total_classes * 100, 1) if total_classes > 0 else 0
+            
             stats_data.append({
                 'Студент': student,
                 'Всего занятий': total_classes,
@@ -1022,11 +1028,12 @@ def generate_monthly_report(message):
                 '🤒 Болел': sick,
                 '📄 Уважительно': excused,
                 '❓ Иные причины': other,
-                '% посещения': round(present / total_classes * 100, 1) if total_classes > 0 else 0
+                '% посещения': attendance_rate
             })
         
         df_stats = pd.DataFrame(stats_data)
         
+        # ========== 3. Итоги по группе ==========
         total_unexcused = df_stats['❌ ПРОГУЛЫ (неуваж.)'].sum()
         total_students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛЫ (неуваж.)'] > 0])
         
@@ -1051,45 +1058,65 @@ def generate_monthly_report(message):
         
         df_summary = pd.DataFrame(summary_data)
         
+        # ========== 4. СОЗДАЁМ EXCEL-ФАЙЛ ==========
         output = BytesIO()
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Записываем все листы
             df_attendance.to_excel(writer, sheet_name='Посещаемость', index=False)
             df_stats.to_excel(writer, sheet_name='Прогулы', index=False)
             df_summary.to_excel(writer, sheet_name='Итоги', index=False)
             
+            # Причины пропусков
             reasons_df = filtered[filtered['Причина'] != '-']
             if not reasons_df.empty:
                 reasons_df = reasons_df[['Дата', 'Пара', 'Студент', 'Статус', 'Причина']]
                 reasons_df.to_excel(writer, sheet_name='Причины', index=False)
             
+            # ===== ФОРМАТИРОВАНИЕ для openpyxl =====
             workbook = writer.book
             worksheet_att = writer.sheets['Посещаемость']
             worksheet_stats = writer.sheets['Прогулы']
             
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#4472C4',
-                'font_color': 'white',
-                'border': 1
-            })
+            # Настраиваем ширину столбцов
+            # Лист Посещаемость
+            worksheet_att.column_dimensions['A'].width = 25  # Студент
+            for col in range(2, len(all_dates) + 2):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                worksheet_att.column_dimensions[col_letter].width = 12  # Даты
             
-            absence_format = workbook.add_format({
-                'bg_color': '#FFC7CE',
-                'font_color': '#9C0006',
-                'border': 1,
-                'bold': True
-            })
+            # Лист Прогулы
+            worksheet_stats.column_dimensions['A'].width = 25  # Студент
+            worksheet_stats.column_dimensions['B'].width = 15  # Всего занятий
+            worksheet_stats.column_dimensions['C'].width = 20  # ❌ ПРОГУЛЫ
+            worksheet_stats.column_dimensions['D'].width = 12  # 🤒 Болел
+            worksheet_stats.column_dimensions['E'].width = 15  # 📄 Уважительно
+            worksheet_stats.column_dimensions['F'].width = 15  # ❓ Иные причины
+            worksheet_stats.column_dimensions['G'].width = 12  # % посещения
             
-            worksheet_stats.set_column('A:A', 25)
-            worksheet_stats.set_column('B:G', 15)
-            worksheet_stats.set_column('C:C', 18, absence_format)
+            # Добавляем условное форматирование для столбца с прогулами (красный фон)
+            from openpyxl.formatting.rule import Rule
+            from openpyxl.styles import PatternFill, Font
+            from openpyxl.styles.differential import DifferentialStyle
             
-            worksheet_att.set_column('A:A', 25)
-            worksheet_att.set_column('B:Z', 12)
+            # Красный фон для ячеек с прогулами > 0
+            red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+            red_font = Font(color='9C0006', bold=True)
+            
+            # Применяем к столбцу C (❌ ПРОГУЛЫ)
+            for row in range(2, len(df_stats) + 2):
+                cell = worksheet_stats.cell(row=row, column=3)
+                if cell.value and cell.value > 0:
+                    cell.fill = red_fill
+                    cell.font = red_font
+            
+            # Добавляем автофильтр
+            worksheet_stats.auto_filter.ref = worksheet_stats.dimensions
+            worksheet_att.auto_filter.ref = worksheet_att.dimensions
         
         output.seek(0)
         
+        # Формируем текстовую сводку
         caption = (
             f"📊 *ОТЧЁТ ЗА {month_year}*\n\n"
             f"👥 *Группа:* {GROUP_NAME}\n"
@@ -1101,6 +1128,7 @@ def generate_monthly_report(message):
             f"*Болезнь и уважительные причины НЕ считаются прогулами*"
         )
         
+        # Отправляем файл
         bot.send_chat_action(message.chat.id, 'upload_document')
         
         bot.send_document(
