@@ -491,19 +491,95 @@ def toggle_lesson(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_all')
 def lessons_all(call):
-    """Выбрать все пары"""
+    """Выбрать все пары - БЕЗ РЕКУРСИИ"""
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = {1, 2, 3, 4, 5, 6}
     bot.answer_callback_query(call.id, "✅ Выбраны все пары")
-    toggle_lesson(call)
+    
+    # Создаём новую клавиатуру без вызова toggle_lesson
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    for num in range(1, 7):
+        time_slot = LESSON_TIMES.get(num, "")
+        btn_text = f"✅ {num} пара ({time_slot})"
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                btn_text,
+                callback_data=f"toggle_lesson_{num}"
+            )
+        )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
+        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
+    )
+    
+    safe_edit_message(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"🔢 *ВЫБОР ПАР*\n\n"
+             f"✅ *Выбрано пар:* 6\n\n"
+             f"*Расписание:*\n"
+             f"1. {LESSON_TIMES[1]}\n"
+             f"2. {LESSON_TIMES[2]}\n"
+             f"3. {LESSON_TIMES[3]}\n"
+             f"4. {LESSON_TIMES[4]}\n"
+             f"5. {LESSON_TIMES[5]}\n"
+             f"6. {LESSON_TIMES[6]}\n\n"
+             f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_clear')
 def lessons_clear(call):
-    """Очистить выбор всех пар"""
+    """Очистить выбор всех пар - БЕЗ РЕКУРСИИ"""
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = set()
     bot.answer_callback_query(call.id, "❌ Выбор очищен")
-    toggle_lesson(call)
+    
+    # Создаём новую клавиатуру без вызова toggle_lesson
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    for num in range(1, 7):
+        time_slot = LESSON_TIMES.get(num, "")
+        btn_text = f"{num} пара ({time_slot})"
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                btn_text,
+                callback_data=f"toggle_lesson_{num}"
+            )
+        )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
+        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
+    )
+    
+    safe_edit_message(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"🔢 *ВЫБОР ПАР*\n\n"
+             f"❌ *Ничего не выбрано*\n\n"
+             f"*Расписание:*\n"
+             f"1. {LESSON_TIMES[1]}\n"
+             f"2. {LESSON_TIMES[2]}\n"
+             f"3. {LESSON_TIMES[3]}\n"
+             f"4. {LESSON_TIMES[4]}\n"
+             f"5. {LESSON_TIMES[5]}\n"
+             f"6. {LESSON_TIMES[6]}\n\n"
+             f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_done')
 def lessons_done(call):
@@ -548,7 +624,7 @@ def save_attendance_record(date, lessons, student, status, reason):
             lesson_list = [lessons]
         
         # Получаем все записи ОДИН РАЗ с задержкой
-        time.sleep(1.1)  # Принудительная задержка перед чтением
+        time.sleep(1.1)
         records = attendance_sheet.get_all_values()
         
         # Собираем строки для удаления
@@ -1658,7 +1734,7 @@ if __name__ == "__main__":
     print(f"✅ Множественный выбор студентов - АКТИВЕН")
     print(f"✅ Обновление сообщений без удаления - АКТИВНО")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
-    print(f"✅ Защита от ошибки 'message not modified' - АКТИВНА")
+    print(f"✅ Кнопки 'Выбрать все' и 'Очистить все' - ИСПРАВЛЕНЫ")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
