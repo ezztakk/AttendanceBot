@@ -77,7 +77,7 @@ def get_user_data(user_id):
     if user_id not in user_data:
         user_data[user_id] = {
             'current_date': datetime.date.today().strftime("%d.%m.%Y"),
-            'current_lesson': 1,
+            'selected_lessons': set(),  # Множественный выбор пар
             'marking_mode': False,
             'current_page': 0,
             'students_list': [],
@@ -92,20 +92,24 @@ def start(message):
     
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn1 = telebot.types.KeyboardButton('📅 Выбрать дату')
-    btn2 = telebot.types.KeyboardButton('🔢 Выбрать пару')
+    btn2 = telebot.types.KeyboardButton('🔢 Выбрать пары')
     btn3 = telebot.types.KeyboardButton('📝 Отметить студентов')
     btn4 = telebot.types.KeyboardButton('📊 Получить отчёт')
     btn5 = telebot.types.KeyboardButton('ℹ️ Текущие настройки')
     markup.add(btn1, btn2, btn3, btn4, btn5)
     
-    time_slot = LESSON_TIMES.get(user['current_lesson'], "")
+    # Формируем текст о выбранных парах
+    if user.get('selected_lessons'):
+        selected = sorted(user['selected_lessons'])
+        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected))}"
+    else:
+        lessons_text = "🔢 *Пары:* не выбраны"
     
     bot.send_message(message.chat.id,
                     f"👋 *Система учёта посещаемости*\n"
                     f"👥 *Группа:* {GROUP_NAME}\n\n"
-                    f"📅 *Текущая дата:* {user['current_date']}\n"
-                    f"🔢 *Текущая пара:* {user['current_lesson']}\n"
-                    f"⏰ *Время:* {time_slot}\n\n"
+                    f"📅 *Дата:* {user['current_date']}\n"
+                    f"{lessons_text}\n\n"
                     f"Выберите действие:",
                     parse_mode='Markdown',
                     reply_markup=markup)
@@ -188,7 +192,7 @@ def handle_date_selection(call):
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"📅 *Дата установлена:* {user['current_date']}\n\n"
-             f"Теперь можете выбрать пару или сразу отмечать студентов.",
+             f"Теперь выберите пары и отмечайте студентов.",
         parse_mode='Markdown'
     )
 
@@ -210,56 +214,155 @@ def process_custom_date(message):
                         "Пример: 25.03.2024",
                         parse_mode='Markdown')
 
-# ==================== ВЫБОР ПАРЫ ====================
-@bot.message_handler(func=lambda message: message.text == '🔢 Выбрать пару')
-def choose_lesson(message):
+# ==================== ВЫБОР ПАР (МНОЖЕСТВЕННЫЙ) ====================
+@bot.message_handler(func=lambda message: message.text == '🔢 Выбрать пары')
+def choose_lessons(message):
     user = get_user_data(message.chat.id)
     
-    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
+    # Кнопки для всех пар
     for lesson_num in range(1, 7):
         time_slot = LESSON_TIMES.get(lesson_num, "")
-        is_current = "✅ " if lesson_num == user['current_lesson'] else ""
+        
+        # Отмечаем выбранные пары
+        if lesson_num in user.get('selected_lessons', set()):
+            btn_text = f"✅ {lesson_num} пара ({time_slot})"
+        else:
+            btn_text = f"{lesson_num} пара ({time_slot})"
         
         markup.add(
             telebot.types.InlineKeyboardButton(
-                f"{is_current}{lesson_num} пара",
-                callback_data=f"lesson_{lesson_num}"
+                btn_text,
+                callback_data=f"toggle_lesson_{lesson_num}"
             )
         )
     
+    # Кнопки управления
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
+        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
+    )
+    
+    selected = user.get('selected_lessons', set())
+    selected_text = f"✅ *Выбрано пар:* {len(selected)}" if selected else "❌ *Ничего не выбрано*"
+    
     bot.send_message(message.chat.id,
-                    f"🔢 *Выберите номер пары:*\n\n"
-                    f"📅 Дата: {user['current_date']}\n"
-                    f"Текущая: {user['current_lesson']} пара\n\n"
+                    f"🔢 *ВЫБОР ПАР*\n\n"
+                    f"{selected_text}\n\n"
                     f"*Расписание:*\n"
                     f"1. {LESSON_TIMES[1]}\n"
                     f"2. {LESSON_TIMES[2]}\n"
                     f"3. {LESSON_TIMES[3]}\n"
                     f"4. {LESSON_TIMES[4]}\n"
                     f"5. {LESSON_TIMES[5]}\n"
-                    f"6. {LESSON_TIMES[6]}",
+                    f"6. {LESSON_TIMES[6]}\n\n"
+                    f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
                     parse_mode='Markdown',
                     reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('lesson_'))
-def handle_lesson_selection(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith('toggle_lesson_'))
+def toggle_lesson(call):
+    """Выбор/снятие выбора пары"""
     user = get_user_data(call.message.chat.id)
+    lesson_num = int(call.data.split('_')[2])
     
-    lesson_num = int(call.data.split('_')[1])
-    user['current_lesson'] = lesson_num
+    if 'selected_lessons' not in user:
+        user['selected_lessons'] = set()
     
-    time_slot = LESSON_TIMES.get(lesson_num, "")
+    if lesson_num in user['selected_lessons']:
+        user['selected_lessons'].remove(lesson_num)
+        bot.answer_callback_query(call.id, f"❌ Пара {lesson_num} снята")
+    else:
+        user['selected_lessons'].add(lesson_num)
+        bot.answer_callback_query(call.id, f"✅ Пара {lesson_num} выбрана")
     
-    bot.answer_callback_query(call.id, f"✅ Выбрана {lesson_num} пара")
+    # Обновляем меню
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    for num in range(1, 7):
+        time_slot = LESSON_TIMES.get(num, "")
+        if num in user['selected_lessons']:
+            btn_text = f"✅ {num} пара ({time_slot})"
+        else:
+            btn_text = f"{num} пара ({time_slot})"
+        
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                btn_text,
+                callback_data=f"toggle_lesson_{num}"
+            )
+        )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
+        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
+    )
+    
+    markup.add(
+        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
+    )
+    
+    selected = user['selected_lessons']
+    selected_text = f"✅ *Выбрано пар:* {len(selected)}" if selected else "❌ *Ничего не выбрано*"
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=f"✅ *Настройки установлены:*\n\n"
+        text=f"🔢 *ВЫБОР ПАР*\n\n"
+             f"{selected_text}\n\n"
+             f"*Расписание:*\n"
+             f"1. {LESSON_TIMES[1]}\n"
+             f"2. {LESSON_TIMES[2]}\n"
+             f"3. {LESSON_TIMES[3]}\n"
+             f"4. {LESSON_TIMES[4]}\n"
+             f"5. {LESSON_TIMES[5]}\n"
+             f"6. {LESSON_TIMES[6]}\n\n"
+             f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'lessons_all')
+def lessons_all(call):
+    """Выбрать все пары"""
+    user = get_user_data(call.message.chat.id)
+    user['selected_lessons'] = {1, 2, 3, 4, 5, 6}
+    bot.answer_callback_query(call.id, "✅ Выбраны все пары")
+    toggle_lesson(call)  # Обновляем отображение
+
+@bot.callback_query_handler(func=lambda call: call.data == 'lessons_clear')
+def lessons_clear(call):
+    """Очистить выбор всех пар"""
+    user = get_user_data(call.message.chat.id)
+    user['selected_lessons'] = set()
+    bot.answer_callback_query(call.id, "❌ Выбор очищен")
+    toggle_lesson(call)  # Обновляем отображение
+
+@bot.callback_query_handler(func=lambda call: call.data == 'lessons_done')
+def lessons_done(call):
+    """Завершить выбор пар"""
+    user = get_user_data(call.message.chat.id)
+    
+    if not user.get('selected_lessons'):
+        bot.answer_callback_query(call.id, "❌ Выберите хотя бы одну пару!")
+        return
+    
+    selected = sorted(user['selected_lessons'])
+    selected_text = ", ".join(map(str, selected))
+    
+    bot.answer_callback_query(call.id, f"✅ Выбраны пары: {selected_text}")
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Настройки установлены*\n\n"
              f"📅 *Дата:* {user['current_date']}\n"
-             f"🔢 *Пара:* {lesson_num}\n"
-             f"⏰ *Время:* {time_slot}\n\n"
+             f"🔢 *Выбранные пары:* {selected_text}\n\n"
              f"Теперь можно *отметить студентов* 👇",
         parse_mode='Markdown'
     )
@@ -287,39 +390,50 @@ def get_existing_marks(date, lesson):
     except:
         return {}
 
-# ==================== СОХРАНЕНИЕ ЗАПИСИ ====================
-def save_attendance_record(date, lesson, student, status, reason):
-    """Сохраняет запись о посещении"""
+# ==================== СОХРАНЕНИЕ ЗАПИСИ (ДЛЯ НЕСКОЛЬКИХ ПАР) ====================
+def save_attendance_record(date, lessons, student, status, reason):
+    """Сохраняет запись о посещении для одной или нескольких пар"""
     try:
-        records = attendance_sheet.get_all_values()
+        # Если передан список пар
+        if isinstance(lessons, (list, set)):
+            lesson_list = lessons
+        else:
+            lesson_list = [lessons]
         
-        rows_to_delete = []
-        for i, row in enumerate(records):
-            if (i > 0 and len(row) >= 4 and
-                str(row[0]) == date and
-                str(row[1]) == str(lesson) and
-                str(row[3]) == student):
-                rows_to_delete.append(i + 1)
+        success_count = 0
+        for lesson in lesson_list:
+            # Удаляем старые записи для этого студента на эту дату и пару
+            records = attendance_sheet.get_all_values()
+            
+            rows_to_delete = []
+            for i, row in enumerate(records):
+                if (i > 0 and len(row) >= 4 and
+                    str(row[0]) == date and
+                    str(row[1]) == str(lesson) and
+                    str(row[3]) == student):
+                    rows_to_delete.append(i + 1)
+            
+            for row_num in sorted(rows_to_delete, reverse=True):
+                attendance_sheet.delete_rows(row_num)
+            
+            # Добавляем новую запись
+            time_now = datetime.datetime.now().strftime("%H:%M")
+            
+            attendance_sheet.append_row([
+                date,
+                lesson,
+                GROUP_NAME,
+                student,
+                status,
+                reason,
+                time_now
+            ])
+            success_count += 1
         
-        for row_num in sorted(rows_to_delete, reverse=True):
-            attendance_sheet.delete_rows(row_num)
-        
-        time_now = datetime.datetime.now().strftime("%H:%M")
-        
-        attendance_sheet.append_row([
-            date,
-            lesson,
-            GROUP_NAME,
-            student,
-            status,
-            reason,
-            time_now
-        ])
-        
-        return True
+        return success_count
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
-        return False
+        return 0
 
 # ==================== ОТМЕТКА СТУДЕНТОВ С ЧЕКБОКСАМИ ====================
 def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=None):
@@ -349,7 +463,6 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
     end = min(start + ITEMS_PER_PAGE, total_students)
     
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    time_slot = LESSON_TIMES.get(user['current_lesson'], "")
     
     selected_count = len(user['selected_students'])
     if selected_count > 0:
@@ -422,12 +535,18 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
     
     selected_text = f"✅ *Выбрано:* {selected_count} студентов\n" if selected_count > 0 else ""
     
+    # Информация о выбранных парах
+    lessons_text = ""
+    if user.get('selected_lessons'):
+        selected_lessons = sorted(user['selected_lessons'])
+        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}\n"
+    
     bot.send_message(
         chat_id,
         f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
         f"👥 *Группа:* {GROUP_NAME}\n"
         f"📅 *Дата:* {user['current_date']}\n"
-        f"🔢 *Пара:* {user['current_lesson']} ({time_slot})\n"
+        f"{lessons_text}"
         f"{selected_text}"
         f"{page_info}\n\n"
         f"*Как отмечать:*\n"
@@ -445,6 +564,14 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
 def mark_students(message):
     user = get_user_data(message.chat.id)
     
+    # Проверяем, выбраны ли пары
+    if not user.get('selected_lessons'):
+        bot.send_message(message.chat.id, 
+                        "❌ *Сначала выберите пары!*\n"
+                        "Нажмите 🔢 Выбрать пары",
+                        parse_mode='Markdown')
+        return
+    
     try:
         students = students_sheet.get_all_values()
         if len(students) <= 1:
@@ -455,8 +582,27 @@ def mark_students(message):
         user['selected_students'] = set()
         user['current_page'] = 0
         
-        existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+        # Получаем существующие отметки для ВСЕХ выбранных пар
+        existing_marks = {}
+        for lesson in user['selected_lessons']:
+            marks = get_existing_marks(user['current_date'], lesson)
+            # Объединяем отметки
+            for student, data in marks.items():
+                if student not in existing_marks:
+                    existing_marks[student] = data
+        
         user['marking_mode'] = True
+        
+        # Показываем информацию о количестве выбранных пар
+        selected_lessons = sorted(user['selected_lessons'])
+        lessons_text = ", ".join(map(str, selected_lessons))
+        
+        bot.send_message(message.chat.id,
+                        f"📌 *Отметка для нескольких пар*\n"
+                        f"🔢 *Пары:* {lessons_text}\n"
+                        f"📅 *Дата:* {user['current_date']}\n\n"
+                        f"*Отметки будут применены ко ВСЕМ выбранным парам!*",
+                        parse_mode='Markdown')
         
         show_students_list_with_checkboxes(message.chat.id, students[1:], existing_marks, 0)
         
@@ -477,7 +623,12 @@ def toggle_student(call):
         bot.answer_callback_query(call.id, "✅ Студент выбран")
     
     students = user.get('students_list', [])
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -494,7 +645,12 @@ def clear_selection(call):
     bot.answer_callback_query(call.id, "❌ Все выборы сняты")
     
     students = user.get('students_list', [])
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -531,7 +687,8 @@ def apply_to_selected(call):
         message_id=call.message.message_id,
         text=f"📝 *Применить статус к выбранным студентам*\n\n"
              f"✅ *Выбрано:* {len(user['selected_students'])} студентов\n\n"
-             f"*Выберите статус:*",
+             f"*Отметка будет применена ко всем выбранным парам:*\n"
+             f"{', '.join(map(str, sorted(user['selected_lessons'])))}",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -559,7 +716,7 @@ def apply_status_to_selected(call):
             call.message.chat.id,
             f"📝 *Введите причину для {len(user['selected_students'])} студентов:*\n"
             f"Статус: {info['emoji']} {info['text']}\n\n"
-            f"Причина будет применена ко всем выбранным студентам."
+            f"Причина будет применена ко всем выбранным студентам и всем выбранным парам."
         )
         bot.register_next_step_handler(msg, save_reason_for_selected)
         return
@@ -569,7 +726,7 @@ def apply_status_to_selected(call):
                 student_name = user['students_list'][idx][1]
                 save_attendance_record(
                     user['current_date'], 
-                    user['current_lesson'], 
+                    user['selected_lessons'],  # Передаём ВСЕ выбранные пары
                     student_name, 
                     info['text'], 
                     "-"
@@ -579,7 +736,12 @@ def apply_status_to_selected(call):
     bot.answer_callback_query(call.id, f"✅ Отмечено {len(user['selected_students'])} студентов")
     
     students = user.get('students_list', [])
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -604,7 +766,7 @@ def save_reason_for_selected(message):
             student_name = user['students_list'][idx][1]
             save_attendance_record(
                 user['current_date'],
-                user['current_lesson'],
+                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
                 student_name,
                 pending['status_text'],
                 reason
@@ -616,11 +778,17 @@ def save_reason_for_selected(message):
     bot.send_message(
         message.chat.id,
         f"✅ *Отмечено {len(pending['students'])} студентов*\n"
-        f"📝 *Причина:* {reason}"
+        f"📝 *Причина:* {reason}\n"
+        f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}"
     )
     
     students = user.get('students_list', [])
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     show_students_list_with_checkboxes(message.chat.id, students, existing_marks, user['current_page'])
 
 @bot.callback_query_handler(func=lambda call: call.data in ['mark_all_present', 'mark_all_absent'])
@@ -636,13 +804,23 @@ def mark_all_students(call):
         for student in students:
             if len(student) >= 2:
                 student_name = student[1]
-                save_attendance_record(user['current_date'], user['current_lesson'], 
-                                      student_name, info['text'], "-")
+                save_attendance_record(
+                    user['current_date'], 
+                    user['selected_lessons'],  # Передаём ВСЕ выбранные пары
+                    student_name, 
+                    info['text'], 
+                    "-"
+                )
         
         user['selected_students'] = set()
         bot.answer_callback_query(call.id, f"✅ Все студенты отмечены как {info['text']}")
         
-        existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+        existing_marks = {}
+        for lesson in user['selected_lessons']:
+            marks = get_existing_marks(user['current_date'], lesson)
+            for student, data in marks.items():
+                if student not in existing_marks:
+                    existing_marks[student] = data
         
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -668,8 +846,10 @@ def mark_all_sick(call):
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text="⚠️ *Отметить ВСЕХ студентов как болеющих?*\n\n"
-             "Это перезапишет текущие отметки на эту дату и пару.",
+        text=f"⚠️ *Отметить ВСЕХ студентов как болеющих?*\n\n"
+             f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}\n"
+             f"📅 *Дата:* {user['current_date']}\n\n"
+             f"Это перезапишет текущие отметки на выбранные пары.",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -681,8 +861,10 @@ def confirm_all_sick(call):
     
     msg = bot.send_message(
         call.message.chat.id,
-        "📝 *Введите причину болезни для всех студентов:*\n"
-        "Например: ОРВИ, Грипп, Температура"
+        f"📝 *Введите причину болезни для всех студентов:*\n"
+        f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}\n"
+        f"📅 *Дата:* {user['current_date']}\n\n"
+        f"Например: ОРВИ, Грипп, Температура"
     )
     bot.register_next_step_handler(msg, save_all_sick_with_reason)
 
@@ -696,7 +878,7 @@ def save_all_sick_with_reason(message):
         if len(student) >= 2:
             save_attendance_record(
                 user['current_date'],
-                user['current_lesson'],
+                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
                 student[1],
                 'Болел',
                 reason
@@ -706,10 +888,17 @@ def save_all_sick_with_reason(message):
     
     bot.send_message(
         message.chat.id,
-        f"✅ *Все студенты отмечены как болеющие*\n📝 *Причина:* {reason}"
+        f"✅ *Все студенты отмечены как болеющие*\n"
+        f"📝 *Причина:* {reason}\n"
+        f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}"
     )
     
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     show_students_list_with_checkboxes(message.chat.id, students, existing_marks, user['current_page'])
 
 @bot.callback_query_handler(func=lambda call: call.data == 'mark_all_valid')
@@ -719,8 +908,10 @@ def mark_all_valid(call):
     
     msg = bot.send_message(
         call.message.chat.id,
-        "📝 *Введите уважительную причину для всех студентов:*\n"
-        "Например: Соревнования, Конференция, Мероприятие"
+        f"📝 *Введите уважительную причину для всех студентов:*\n"
+        f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}\n"
+        f"📅 *Дата:* {user['current_date']}\n\n"
+        f"Например: Соревнования, Конференция, Мероприятие"
     )
     bot.register_next_step_handler(msg, save_all_valid_with_reason)
 
@@ -734,7 +925,7 @@ def save_all_valid_with_reason(message):
         if len(student) >= 2:
             save_attendance_record(
                 user['current_date'],
-                user['current_lesson'],
+                user['selected_lessons'],  # Передаём ВСЕ выбранные пары
                 student[1],
                 'Уважительная причина',
                 reason
@@ -744,10 +935,17 @@ def save_all_valid_with_reason(message):
     
     bot.send_message(
         message.chat.id,
-        f"✅ *Все студенты отмечены с уважительной причиной*\n📝 *Причина:* {reason}"
+        f"✅ *Все студенты отмечены с уважительной причиной*\n"
+        f"📝 *Причина:* {reason}\n"
+        f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}"
     )
     
-    existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+    existing_marks = {}
+    for lesson in user['selected_lessons']:
+        marks = get_existing_marks(user['current_date'], lesson)
+        for student, data in marks.items():
+            if student not in existing_marks:
+                existing_marks[student] = data
     show_students_list_with_checkboxes(message.chat.id, students, existing_marks, user['current_page'])
 
 @bot.callback_query_handler(func=lambda call: call.data == 'back_to_list')
@@ -770,7 +968,12 @@ def refresh_students_list(chat_id, message_id=None):
         user['students_list'] = students
         user['selected_students'] = {idx for idx in old_selection if idx < len(students)}
         
-        existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+        existing_marks = {}
+        for lesson in user['selected_lessons']:
+            marks = get_existing_marks(user['current_date'], lesson)
+            for student, data in marks.items():
+                if student not in existing_marks:
+                    existing_marks[student] = data
         
         if message_id:
             try:
@@ -791,14 +994,15 @@ def save_and_exit(call):
     
     bot.answer_callback_query(call.id, "✅ Данные сохранены")
     
-    time_slot = LESSON_TIMES.get(user['current_lesson'], "")
+    selected_lessons = sorted(user['selected_lessons'])
+    lessons_text = ", ".join(map(str, selected_lessons)) if selected_lessons else "не выбраны"
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"✅ *Данные сохранены!*\n\n"
              f"📅 *Дата:* {user['current_date']}\n"
-             f"🔢 *Пара:* {user['current_lesson']} ({time_slot})\n"
+             f"🔢 *Пары:* {lessons_text}\n"
              f"👥 *Группа:* {GROUP_NAME}\n\n"
              f"Для нового действия нажмите /start",
         parse_mode='Markdown'
@@ -818,7 +1022,12 @@ def page_prev(call):
             all_students = students_sheet.get_all_values()
             students = all_students[1:] if len(all_students) > 1 else []
             user['students_list'] = students
-        existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+        existing_marks = {}
+        for lesson in user['selected_lessons']:
+            marks = get_existing_marks(user['current_date'], lesson)
+            for student, data in marks.items():
+                if student not in existing_marks:
+                    existing_marks[student] = data
         show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, page=current_page - 1)
     else:
         bot.answer_callback_query(call.id, "Вы на первой странице")
@@ -834,14 +1043,19 @@ def page_next(call):
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
-        existing_marks = get_existing_marks(user['current_date'], user['current_lesson'])
+        existing_marks = {}
+        for lesson in user['selected_lessons']:
+            marks = get_existing_marks(user['current_date'], lesson)
+            for student, data in marks.items():
+                if student not in existing_marks:
+                    existing_marks[student] = data
         show_students_list_with_checkboxes(call.message.chat.id, students, existing_marks, page=current_page + 1)
     else:
         bot.answer_callback_query(call.id, "Вы на последней странице")
 
-# ==================== ДОБАВЛЕНИЕ СТУДЕНТА (ТОЛЬКО ДЛЯ ТЕСТИРОВАНИЯ) ====================
+# ==================== ДОБАВЛЕНИЕ СТУДЕНТА ====================
 def save_new_student(message):
-    """Сохраняет нового студента (вызывается из других частей кода)"""
+    """Сохраняет нового студента"""
     try:
         name = message.text.strip()
         
@@ -927,7 +1141,7 @@ def generate_monthly_report(message):
                     if status == 'Присутствовал':
                         row[date] = '✅'
                     elif status == 'Отсутствовал':
-                        row[date] = '❌'  # ПРОГУЛ - красным
+                        row[date] = '❌'
                     elif status == 'Болел':
                         row[date] = '🤒'
                     elif status == 'Уважительная причина':
@@ -937,12 +1151,12 @@ def generate_monthly_report(message):
                     else:
                         row[date] = status
                 else:
-                    row[date] = ''  # Пусто, если не было пары
+                    row[date] = ''
             attendance_matrix.append(row)
         
         df_attendance = pd.DataFrame(attendance_matrix)
         
-        # ========== 2. ЛИСТ СТАТИСТИКИ (ПРАВИЛЬНЫЕ ЗАГОЛОВКИ) ==========
+        # ========== 2. ЛИСТ СТАТИСТИКИ ==========
         stats_data = []
         
         for student in all_students:
@@ -950,7 +1164,7 @@ def generate_monthly_report(message):
             
             total_classes = len(student_records)
             present = len(student_records[student_records['Статус'] == 'Присутствовал'])
-            unexcused = len(student_records[student_records['Статус'] == 'Отсутствовал'])  # ТОЛЬКО ЭТО ПРОГУЛЫ
+            unexcused = len(student_records[student_records['Статус'] == 'Отсутствовал'])
             sick = len(student_records[student_records['Статус'] == 'Болел'])
             excused = len(student_records[student_records['Статус'] == 'Уважительная причина'])
             other = len(student_records[student_records['Статус'] == 'Иная причина'])
@@ -961,7 +1175,7 @@ def generate_monthly_report(message):
                 'Студент': student,
                 'Всего занятий': total_classes,
                 '✅ Присутствовал': present,
-                '❌ ПРОГУЛ (неуваж.)': unexcused,  # ПРАВИЛЬНОЕ НАЗВАНИЕ
+                '❌ ПРОГУЛ (неуваж.)': unexcused,
                 '🤒 Болел': sick,
                 '📄 Уважительная причина': excused,
                 '❓ Иная причина': other,
@@ -1015,7 +1229,6 @@ def generate_monthly_report(message):
             worksheet_att = writer.sheets['Посещаемость']
             worksheet_stats = writer.sheets['Статистика']
             
-            # === ФОРМАТИРОВАНИЕ ЛИСТА СТАТИСТИКИ ===
             # Заголовки (жирные, с фоном)
             header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
             header_font = Font(color='FFFFFF', bold=True)
@@ -1028,40 +1241,32 @@ def generate_monthly_report(message):
                 cell.alignment = Alignment(horizontal='center')
             
             # Ширина столбцов
-            worksheet_stats.column_dimensions['A'].width = 25  # Студент
-            worksheet_stats.column_dimensions['B'].width = 15  # Всего занятий
-            worksheet_stats.column_dimensions['C'].width = 18  # ✅ Присутствовал
-            worksheet_stats.column_dimensions['D'].width = 22  # ❌ ПРОГУЛ - САМЫЙ ВАЖНЫЙ
-            worksheet_stats.column_dimensions['E'].width = 12  # 🤒 Болел
-            worksheet_stats.column_dimensions['F'].width = 20  # 📄 Уважительная причина
-            worksheet_stats.column_dimensions['G'].width = 15  # ❓ Иная причина
-            worksheet_stats.column_dimensions['H'].width = 15  # % посещения
+            worksheet_stats.column_dimensions['A'].width = 25
+            worksheet_stats.column_dimensions['B'].width = 15
+            worksheet_stats.column_dimensions['C'].width = 18
+            worksheet_stats.column_dimensions['D'].width = 22
+            worksheet_stats.column_dimensions['E'].width = 12
+            worksheet_stats.column_dimensions['F'].width = 20
+            worksheet_stats.column_dimensions['G'].width = 15
+            worksheet_stats.column_dimensions['H'].width = 15
             
-            # === КРАСНЫЙ ФОН ТОЛЬКО ДЛЯ ПРОГУЛОВ ===
+            # Красный фон только для прогулов
             red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
             red_font = Font(color='9C0006', bold=True)
             
-            # Применяем красный фон к ячейкам с прогулами (>0) в столбце D
             for row in range(2, len(df_stats) + 2):
-                cell = worksheet_stats.cell(row=row, column=4)  # Столбец D - ПРОГУЛЫ
+                cell = worksheet_stats.cell(row=row, column=4)
                 if cell.value and cell.value > 0:
                     cell.fill = red_fill
                     cell.font = red_font
             
-            # === ФОРМАТИРОВАНИЕ ЛИСТА ПОСЕЩАЕМОСТИ ===
-            # Ширина столбцов
-            worksheet_att.column_dimensions['A'].width = 25  # Студент
+            # Форматирование листа посещаемости
+            worksheet_att.column_dimensions['A'].width = 25
             for col in range(2, len(all_dates) + 2):
                 col_letter = get_column_letter(col)
-                worksheet_att.column_dimensions[col_letter].width = 12  # Даты
+                worksheet_att.column_dimensions[col_letter].width = 12
             
-            # Заголовки дат
-            for col in range(2, len(all_dates) + 2):
-                col_letter = get_column_letter(col)
-                cell = worksheet_att[f'{col_letter}1']
-                cell.alignment = Alignment(horizontal='center')
-            
-            # === ФОРМАТИРОВАНИЕ ЛИСТА ИТОГОВ ===
+            # Форматирование листа итогов
             worksheet_summary = writer.sheets['Итоги']
             worksheet_summary.column_dimensions['A'].width = 35
             worksheet_summary.column_dimensions['B'].width = 20
@@ -1103,7 +1308,15 @@ def generate_monthly_report(message):
 @bot.message_handler(func=lambda message: message.text == 'ℹ️ Текущие настройки')
 def show_current_settings(message):
     user = get_user_data(message.chat.id)
-    time_slot = LESSON_TIMES.get(user['current_lesson'], "")
+    
+    # Формируем текст о выбранных парах
+    if user.get('selected_lessons'):
+        selected = sorted(user['selected_lessons'])
+        lessons_text = ", ".join(map(str, selected))
+        time_slots = "\n".join([f"   {i}. {LESSON_TIMES[i]}" for i in selected])
+    else:
+        lessons_text = "не выбраны"
+        time_slots = "   не выбраны"
     
     try:
         students = students_sheet.get_all_values()
@@ -1116,11 +1329,11 @@ def show_current_settings(message):
                     f"👥 *Группа:* {GROUP_NAME}\n"
                     f"👤 *Студентов:* {student_count}\n\n"
                     f"📅 *Дата:* {user['current_date']}\n"
-                    f"🔢 *Пара:* {user['current_lesson']}\n"
-                    f"⏰ *Время:* {time_slot}\n\n"
+                    f"🔢 *Выбранные пары:* {lessons_text}\n"
+                    f"⏰ *Время пар:*\n{time_slots}\n\n"
                     f"*Изменить:*\n"
                     f"📅 - выбрать дату\n"
-                    f"🔢 - выбрать пару\n"
+                    f"🔢 - выбрать пары\n"
                     f"📝 - отметить студентов",
                     parse_mode='Markdown')
 
@@ -1129,6 +1342,7 @@ if __name__ == "__main__":
     print("=" * 50)
     print(f"🤖 Бот для учёта посещаемости ЗАПУЩЕН!")
     print(f"📍 Группа: {GROUP_NAME}")
+    print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Множественный выбор студентов - АКТИВЕН")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
