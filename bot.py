@@ -1745,8 +1745,16 @@ if __name__ == "__main__":
     print("=" * 60)
     
     try:
-        bot.polling(none_stop=True, interval=0)
+        while True:
+    try:
+        print("🔄 Запуск бота...")
+        bot.polling(none_stop=False, interval=1, timeout=30)
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        print("🔄 Перезапуск через 10 секунд...")
+        time.sleep(10)
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         import time
         time.sleep(10)
+
