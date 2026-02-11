@@ -95,9 +95,8 @@ def start(message):
     btn2 = telebot.types.KeyboardButton('🔢 Выбрать пару')
     btn3 = telebot.types.KeyboardButton('📝 Отметить студентов')
     btn4 = telebot.types.KeyboardButton('📊 Получить отчёт')
-    btn5 = telebot.types.KeyboardButton('👥 Управление студентами')
-    btn6 = telebot.types.KeyboardButton('ℹ️ Текущие настройки')
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+    btn5 = telebot.types.KeyboardButton('ℹ️ Текущие настройки')
+    markup.add(btn1, btn2, btn3, btn4, btn5)
     
     time_slot = LESSON_TIMES.get(user['current_lesson'], "")
     
@@ -840,54 +839,9 @@ def page_next(call):
     else:
         bot.answer_callback_query(call.id, "Вы на последней странице")
 
-# ==================== УПРАВЛЕНИЕ СТУДЕНТАМИ ====================
-@bot.message_handler(func=lambda message: message.text == '👥 Управление студентами')
-def manage_students(message):
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("➕ Добавить студента", callback_data="add_student"),
-        telebot.types.InlineKeyboardButton("🗑️ Удалить студента", callback_data="delete_student"),
-        telebot.types.InlineKeyboardButton("📋 Список студентов", callback_data="list_students"),
-        telebot.types.InlineKeyboardButton("📤 Импорт из файла", callback_data="import_students")
-    )
-    
-    bot.send_message(message.chat.id,
-                    "👥 *Управление списком студентов*\n\n"
-                    f"Группа: *{GROUP_NAME}*",
-                    parse_mode='Markdown',
-                    reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == 'list_students')
-def list_students(call):
-    try:
-        students = students_sheet.get_all_values()
-        
-        if len(students) <= 1:
-            bot.answer_callback_query(call.id, "📭 Список студентов пуст")
-            return
-        
-        response = f"📋 *Список студентов ({GROUP_NAME}):*\n\n"
-        
-        for i, student in enumerate(students[1:], 1):
-            if len(student) >= 2:
-                response += f"{i}. {student[1]}\n"
-        
-        bot.send_message(call.message.chat.id, response, parse_mode='Markdown')
-        
-    except Exception as e:
-        bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data == 'add_student')
-def add_student(call):
-    msg = bot.send_message(call.message.chat.id,
-                          "📝 *Добавление студента*\n\n"
-                          "Введите Фамилию и Имя студента:\n\n"
-                          "*Пример:*\n"
-                          "Иванов Алексей")
-    bot.register_next_step_handler(msg, save_new_student)
-
+# ==================== ДОБАВЛЕНИЕ СТУДЕНТА (ТОЛЬКО ДЛЯ ТЕСТИРОВАНИЯ) ====================
 def save_new_student(message):
+    """Сохраняет нового студента (вызывается из других частей кода)"""
     try:
         name = message.text.strip()
         
