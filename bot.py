@@ -8,6 +8,8 @@ import os
 import openpyxl
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import PatternFill, Font, Alignment
+import time
+from threading import Lock
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -21,6 +23,110 @@ UNRESPECTFUL_STATUSES = ['Отсутствовал']  # ❌
 # Количество студентов на одной странице
 ITEMS_PER_PAGE = 10
 # ===================================================
+
+# ==================== КЭШИРОВАНИЕ ====================
+class SheetsCache:
+    """Кэш для данных Google Sheets с защитой от превышения квоты"""
+    def __init__(self):
+        self.students_cache = []
+        self.students_timestamp = 0
+        self.attendance_cache = {}
+        self.attendance_timestamp = {}
+        self.cache_ttl = 30  # Время жизни кэша в секундах
+        self.lock = Lock()
+        self.max_retries = 5
+        self.base_delay = 1
+    
+    def _safe_call(self, func, *args, **kwargs):
+        """Безопасный вызов API с повторными попытками"""
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_str = str(e)
+                if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                    if attempt < self.max_retries - 1:
+                        delay = self.base_delay * (2 ** attempt)
+                        print(f"⚠️ Превышена квота API. Ожидание {delay} сек... (попытка {attempt + 1}/{self.max_retries})")
+                        time.sleep(delay)
+                    else:
+                        print("❌ Исчерпаны все попытки вызова API")
+                        raise e
+                else:
+                    raise e
+    
+    def get_students(self):
+        """Получить список студентов с кэшированием"""
+        with self.lock:
+            current_time = time.time()
+            if not self.students_cache or current_time - self.students_timestamp > self.cache_ttl:
+                try:
+                    self.students_cache = self._safe_call(students_sheet.get_all_values)
+                    self.students_timestamp = current_time
+                    print("📥 Загружен список студентов (кэш обновлён)")
+                except Exception as e:
+                    if self.students_cache:
+                        print("⚠️ Используем устаревший кэш студентов")
+                        return self.students_cache
+                    raise e
+            return self.students_cache
+    
+    def get_attendance(self, date, lesson):
+        """Получить отметки для даты и пары с кэшированием"""
+        key = f"{date}_{lesson}"
+        with self.lock:
+            current_time = time.time()
+            if key not in self.attendance_cache or current_time - self.attendance_timestamp.get(key, 0) > self.cache_ttl:
+                try:
+                    records = self._safe_call(attendance_sheet.get_all_records)
+                    # Фильтруем записи для конкретной даты и пары
+                    filtered = {}
+                    for record in records:
+                        if (str(record.get('Дата', '')) == date and
+                            str(record.get('Пара', '')) == str(lesson)):
+                            student_name = record.get('Студент', '')
+                            if student_name:
+                                filtered[student_name] = {
+                                    'status': record.get('Статус', ''),
+                                    'reason': record.get('Причина', '')
+                                }
+                    self.attendance_cache[key] = filtered
+                    self.attendance_timestamp[key] = current_time
+                    print(f"📥 Загружены отметки для {date} пара {lesson} (кэш обновлён)")
+                except Exception as e:
+                    if key in self.attendance_cache:
+                        print(f"⚠️ Используем устаревший кэш для {date} пара {lesson}")
+                        return self.attendance_cache[key]
+                    raise e
+            return self.attendance_cache[key]
+    
+    def clear_attendance_cache(self, date=None, lesson=None):
+        """Очистить кэш отметок"""
+        with self.lock:
+            if date and lesson:
+                key = f"{date}_{lesson}"
+                self.attendance_cache.pop(key, None)
+                self.attendance_timestamp.pop(key, None)
+                print(f"🗑️ Очищен кэш для {date} пара {lesson}")
+            elif date:
+                keys_to_remove = [key for key in self.attendance_cache.keys() if key.startswith(f"{date}_")]
+                for key in keys_to_remove:
+                    self.attendance_cache.pop(key, None)
+                    self.attendance_timestamp.pop(key, None)
+                print(f"🗑️ Очищен кэш для всех пар {date}")
+            else:
+                self.attendance_cache.clear()
+                self.attendance_timestamp.clear()
+                print("🗑️ Очищен весь кэш отметок")
+    
+    def clear_students_cache(self):
+        """Очистить кэш студентов"""
+        with self.lock:
+            self.students_cache = []
+            self.students_timestamp = 0
+            print("🗑️ Очищен кэш студентов")
+
+# ====================================================
 
 # Расписание пар
 LESSON_TIMES = {
@@ -63,6 +169,11 @@ try:
     attendance_sheet = spreadsheet.worksheet("Посещаемость")
     students_sheet = spreadsheet.worksheet("Студенты")
     print("✅ Google Таблица подключена!")
+    
+    # Инициализируем кэш
+    cache = SheetsCache()
+    print("✅ Система кэширования запущена")
+    
 except Exception as e:
     print(f"❌ Ошибка подключения к Google: {e}")
     exit()
@@ -367,45 +478,33 @@ def lessons_done(call):
         parse_mode='Markdown'
     )
 
-# ==================== ПОЛУЧЕНИЕ СУЩЕСТВУЮЩИХ ОТМЕТОК ====================
+# ==================== ПОЛУЧЕНИЕ СУЩЕСТВУЮЩИХ ОТМЕТОК (С КЭШЕМ) ====================
 def get_existing_marks(date, lesson):
-    """Получаем существующие отметки для даты и пары"""
+    """Получаем существующие отметки для даты и пары с кэшированием"""
     try:
-        records = attendance_sheet.get_all_records()
-        existing_marks = {}
-        
-        for record in records:
-            if (str(record.get('Дата', '')) == date and
-                str(record.get('Пара', '')) == str(lesson)):
-                
-                student_name = record.get('Студент', '')
-                status = record.get('Статус', '')
-                reason = record.get('Причина', '')
-                if student_name and status:
-                    existing_marks[student_name] = {
-                        'status': status,
-                        'reason': reason
-                    }
-        return existing_marks
-    except:
+        return cache.get_attendance(date, lesson)
+    except Exception as e:
+        print(f"❌ Ошибка получения отметок: {e}")
         return {}
 
-# ==================== СОХРАНЕНИЕ ЗАПИСИ (ДЛЯ НЕСКОЛЬКИХ ПАР) ====================
+# ==================== СОХРАНЕНИЕ ЗАПИСИ (БАТЧОВОЕ) ====================
 def save_attendance_record(date, lessons, student, status, reason):
-    """Сохраняет запись о посещении для одной или нескольких пар"""
+    """Сохраняет запись о посещении для одной или нескольких пар (батч-операция)"""
     try:
-        # Если передан список пар
         if isinstance(lessons, (list, set)):
-            lesson_list = lessons
+            lesson_list = list(lessons)
         else:
             lesson_list = [lessons]
         
-        success_count = 0
+        # Получаем все записи ОДИН РАЗ
+        records = attendance_sheet.get_all_values()
+        
+        # Собираем строки для удаления
+        rows_to_delete = []
+        rows_to_add = []
+        
         for lesson in lesson_list:
-            # Удаляем старые записи для этого студента на эту дату и пару
-            records = attendance_sheet.get_all_values()
-            
-            rows_to_delete = []
+            # Ищем существующие записи
             for i, row in enumerate(records):
                 if (i > 0 and len(row) >= 4 and
                     str(row[0]) == date and
@@ -413,13 +512,9 @@ def save_attendance_record(date, lessons, student, status, reason):
                     str(row[3]) == student):
                     rows_to_delete.append(i + 1)
             
-            for row_num in sorted(rows_to_delete, reverse=True):
-                attendance_sheet.delete_rows(row_num)
-            
             # Добавляем новую запись
             time_now = datetime.datetime.now().strftime("%H:%M")
-            
-            attendance_sheet.append_row([
+            rows_to_add.append([
                 date,
                 lesson,
                 GROUP_NAME,
@@ -428,11 +523,26 @@ def save_attendance_record(date, lessons, student, status, reason):
                 reason,
                 time_now
             ])
-            success_count += 1
         
-        return success_count
+        # Батчевое удаление
+        if rows_to_delete:
+            for row_num in sorted(rows_to_delete, reverse=True):
+                attendance_sheet.delete_rows(row_num)
+            print(f"🗑️ Удалено {len(rows_to_delete)} записей")
+        
+        # Батчевое добавление
+        if rows_to_add:
+            for row in rows_to_add:
+                attendance_sheet.append_row(row)
+            print(f"📝 Добавлено {len(rows_to_add)} записей")
+        
+        # Очищаем кэш для затронутых дат и пар
+        for lesson in lesson_list:
+            cache.clear_attendance_cache(date, lesson)
+        
+        return len(rows_to_add)
     except Exception as e:
-        print(f"Ошибка сохранения: {e}")
+        print(f"❌ Ошибка сохранения: {e}")
         return 0
 
 # ==================== СОЗДАНИЕ КЛАВИАТУРЫ СТУДЕНТОВ ====================
@@ -589,27 +699,28 @@ def mark_students(message):
         return
     
     try:
-        students = students_sheet.get_all_values()
-        if len(students) <= 1:
+        # Используем кэшированный список студентов
+        all_students = cache.get_students()
+        students = all_students[1:] if len(all_students) > 1 else []
+        
+        if len(students) <= 0:
             bot.send_message(message.chat.id, "❌ Сначала добавьте студентов!")
             return
         
-        user['students_list'] = students[1:]
+        user['students_list'] = students
         user['selected_students'] = set()
         user['current_page'] = 0
         
-        # Получаем существующие отметки для ВСЕХ выбранных пар
+        # Получаем отметки для ВСЕХ выбранных пар (с кэшированием)
         existing_marks = {}
         for lesson in user['selected_lessons']:
             marks = get_existing_marks(user['current_date'], lesson)
-            # Объединяем отметки
             for student, data in marks.items():
                 if student not in existing_marks:
                     existing_marks[student] = data
         
         user['marking_mode'] = True
         
-        # Показываем информацию о количестве выбранных пар
         selected_lessons = sorted(user['selected_lessons'])
         lessons_text = ", ".join(map(str, selected_lessons))
         
@@ -620,7 +731,7 @@ def mark_students(message):
                         f"*Отметки будут применены ко ВСЕМ выбранным парам!*",
                         parse_mode='Markdown')
         
-        show_students_list_with_checkboxes(message.chat.id, students[1:], existing_marks, 0)
+        show_students_list_with_checkboxes(message.chat.id, students, existing_marks, 0)
         
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
@@ -1056,17 +1167,19 @@ def refresh_list(call):
     refresh_students_list(call.message.chat.id, call.message.message_id)
 
 def refresh_students_list(chat_id, message_id=None):
-    """Обновляет список студентов с сохранением выбора"""
+    """Обновляет список студентов с сохранением выбора (с кэшированием)"""
     user = get_user_data(chat_id)
     
     try:
-        all_students = students_sheet.get_all_values()
+        # Используем кэшированный список студентов
+        all_students = cache.get_students()
         students = all_students[1:] if len(all_students) > 1 else []
         
         old_selection = user.get('selected_students', set())
         user['students_list'] = students
         user['selected_students'] = {idx for idx in old_selection if idx < len(students)}
         
+        # Получаем отметки с кэшированием
         existing_marks = {}
         for lesson in user['selected_lessons']:
             marks = get_existing_marks(user['current_date'], lesson)
@@ -1075,7 +1188,6 @@ def refresh_students_list(chat_id, message_id=None):
                     existing_marks[student] = data
         
         if message_id:
-            # Обновляем сообщение
             back_to_list_with_data(chat_id, message_id, students, existing_marks)
         else:
             show_students_list_with_checkboxes(chat_id, students, existing_marks, user.get('current_page', 0))
@@ -1112,7 +1224,7 @@ def page_prev(call):
     if current_page > 0:
         students = user.get('students_list', [])
         if not students:
-            all_students = students_sheet.get_all_values()
+            all_students = cache.get_students()
             students = all_students[1:] if len(all_students) > 1 else []
             user['students_list'] = students
         
@@ -1226,6 +1338,7 @@ def save_new_student(message):
                 return
         
         students_sheet.append_row([GROUP_NAME, name])
+        cache.clear_students_cache()  # Очищаем кэш студентов
         
         bot.send_message(message.chat.id,
                         f"✅ *Студент добавлен!*\n\n"
@@ -1260,7 +1373,7 @@ def generate_monthly_report(message):
         
         month, year = map(int, month_year.split('.'))
         
-        # Получаем данные
+        # Получаем данные (без кэша для отчёта - нужны актуальные данные)
         records = attendance_sheet.get_all_records()
         if not records:
             bot.send_message(message.chat.id, "📭 Нет данных для отчёта")
@@ -1277,8 +1390,8 @@ def generate_monthly_report(message):
             bot.send_message(message.chat.id, f"📭 Нет данных за {month_year}")
             return
         
-        # Получаем список студентов
-        all_students_data = students_sheet.get_all_values()
+        # Получаем список студентов (с кэшем)
+        all_students_data = cache.get_students()
         all_students = [s[1] for s in all_students_data[1:] if len(s) >= 2]
         
         # ========== 1. ЛИСТ ПОСЕЩАЕМОСТИ (СТУДЕНТЫ × ДАТЫ) ==========
@@ -1293,7 +1406,6 @@ def generate_monthly_report(message):
                 day_records = student_records[student_records['Дата'].dt.strftime('%d.%m.%Y') == date]
                 if not day_records.empty:
                     status = day_records.iloc[0]['Статус']
-                    # Ставим сокращённое обозначение
                     if status == 'Присутствовал':
                         row[date] = '✅'
                     elif status == 'Отсутствовал':
@@ -1475,8 +1587,9 @@ def show_current_settings(message):
         time_slots = "   не выбраны"
     
     try:
-        students = students_sheet.get_all_values()
-        student_count = max(0, len(students) - 1)
+        # Используем кэшированный список студентов
+        all_students = cache.get_students()
+        student_count = max(0, len(all_students) - 1)
     except:
         student_count = 0
     
@@ -1495,17 +1608,22 @@ def show_current_settings(message):
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    print("=" * 50)
-    print(f"🤖 Бот для учёта посещаемости ЗАПУЩЕН!")
+    print("=" * 60)
+    print("🤖 Бот для учёта посещаемости ЗАПУЩЕН!")
+    print("=" * 60)
     print(f"📍 Группа: {GROUP_NAME}")
     print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Множественный выбор студентов - АКТИВЕН")
     print(f"✅ Обновление сообщений без удаления - АКТИВНО")
+    print(f"✅ КЭШИРОВАНИЕ API - АКТИВНО")
+    print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
     for i in range(1, 7):
         print(f"   {i}. {LESSON_TIMES[i]}")
-    print("=" * 50)
+    print("=" * 60)
+    print("⚡ Статус: Ожидание команд...")
+    print("=" * 60)
     
     try:
         bot.polling(none_stop=True, interval=0)
