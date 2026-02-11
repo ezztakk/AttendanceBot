@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "attendance-bot-project-487109",
+  "private_key_id": "dbdae97d6148436d1dddf1db1c0ce1e4f70a329e",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC0nXA8bLcepxBk\nz/N9mnokfZgy/rLWlbXQK7LD8lN17dJMU/Y9z587xrbZIGCQECWSNo2EPE0Lg2G3\nWq9SuEJG554gJ57VH0/CT0BnUH/l8rMPTs9oXMIJeG7YM/oNqUrBCIow423XJX+X\no0ku4iP3dxuSrmTAH0IhNh9CY2kQtk4VvSuodd4Zwm1cHxsfOnZDLPpqJNUnefFD\n5nF66sqp3gcCCV/kPiC+BMcXL9V3c9QeLjiIDbk0eedglZtS9uLKCuEomUv3mfC0\natQ+rYkIg7pzH5ebKVCvEYDv0P3f2tsaYK/ybXTfs2fBjjNN1g2pjpEWZx37GitL\nQ2/vYRZlAgMBAAECggEABbV6QDaxfRMLxhv6lsxEsxWTM31weq7lvcw7zMzCjZY0\nUPxQari+0D1iNy+6TaNtBJeb1oOvbb873fdMVmGDmskkauDFuPfR5hLqNrnJKSQI\nO+IiVSqlaXY4jrXp3/eraLmT4KK3rJa/VzQukoBMYbyOjw7bGWWDihgzWb5ZqlED\nMcge5lR/qzuBt6nJpxSc7gPsl9jn8ktQtrY5xQMGDvF5GG5Tfkm+ePimV2zaGnTO\nI+HlIdk+h9V7SLZvIoqDTkszxy3yfGWx5ouF01/P+L7XgVqogC3a5vq5VKhTmLE3\nGise9Ope8s1A37fWFo1vBjIGl9xYKdd3glt2tHZpkQKBgQDuHY3cVGZciNuhH90Y\nPVe/Q3GDo5iC8EQqxj/H4QtmKSDGRqsCVmfgym3nmr0v52VLVx8Wo/4UVATYiN2v\nCa+47/O+RLdWclWbq8xGr4aAm0UXhzmXKB033u+krXLvgtjb7bfskhNi9VwN/X16\nThkSpsR9cmBQqs+h+2G4q1/9vQKBgQDCLkZV4mCzGARHPX436lFxaA2xwJ3Fjf54\nsVDWTvIbSOBYaOMp4feF306J9Ul9i74h31avPQ4tDe8UoIMcTQdqA8xcPy6PNsUh\nKVD1oL7vJabomPRqv/6toEpbYL/HLYOJOtf0viv9oGoNNdu63c/w3HkIeHi918hc\neTkkdZuhyQKBgQDpkff7rpaSInU+QeFAy7ttFB0fQbRyjHhxdPJPgMMLvUA2/k71\nBgjzid3xF+qIOPU1yAnozYiILDpspSS/dEL4p/dyJjmpBJJRF15T4A2Rzb0ibTTi\nvyiaC4cLBFD//Fv4r+CAoHF/2qon1wXkmQMjNo77dtxfhI4TmGCtIv4QCQKBgB74\nrIVETzIhkYUfXMNkX0scUprYYxHAfScY+RDFlL4fWJEhYaIrhYRXwrokYm1g3Zmf\ner8GmP08rLZ4h5D7BES3iF/qP+3dyYFpip0y32Fbewy8YLeqGd/tog6DFvOY4dMA\njLNfpbqVXHTw8zQR7vm24KMmO/Pjt/Rv7VpQW9tpAoGANPol3/7H5v14XRfos+Sh\nSPEoDas/ZS49uhiQjIV6kU1o1Xbr5PasWxoyKYhN6gNa9/NKBrAMs8t7QQ4Yhwd5\ntmzs091HQmIOrdRvpKwvSYfypfnazy9w5QaHr/z0U+ACjVOCN9C22dWwGcZTohAg\nYGg8eDHMs4+xy8HHcYeq7HY=\n-----END PRIVATE KEY-----\n",
+  "client_email": "attendance-bot-service@attendance-bot-project-487109.iam.gserviceaccount.com",
+  "client_id": "103540680335043463710",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/attendance-bot-service%40attendance-bot-project-487109.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
