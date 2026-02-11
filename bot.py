@@ -1,3 +1,4 @@
+import requests
 import telebot
 import gspread
 from google.oauth2.service_account import Credentials
@@ -10,6 +11,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import PatternFill, Font, Alignment
 import time
 from threading import Lock
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -23,6 +26,20 @@ UNRESPECTFUL_STATUSES = ['Отсутствовал']  # ❌
 # Количество студентов на одной странице
 ITEMS_PER_PAGE = 10
 # ===================================================
+
+# ==================== НАСТРОЙКА СЕССИИ ====================
+session = requests.Session()
+retry = Retry(
+    total=5,
+    read=5,
+    connect=5,
+    backoff_factor=0.5,
+    status_forcelist=(500, 502, 503, 504),
+)
+adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+# ====================================================
 
 # ==================== БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ СООБЩЕНИЙ ====================
 def safe_edit_message(chat_id, message_id, text, reply_markup=None, parse_mode='Markdown'):
@@ -229,8 +246,9 @@ except Exception as e:
     print(f"❌ Ошибка подключения к Google: {e}")
     exit()
 
-# Создаём бота
-bot = telebot.TeleBot(BOT_TOKEN)
+# Создаём бота с увеличенными таймаутами
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True, skip_pending=True)
+bot.session = session
 
 # ==================== ХРАНЕНИЕ ТЕКУЩЕГО ВЫБОРА ====================
 user_data = {}
@@ -1736,25 +1754,28 @@ if __name__ == "__main__":
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
     print(f"✅ Кнопки 'Выбрать все' и 'Очистить все' - ИСПРАВЛЕНЫ")
     print(f"✅ Батчевые операции - АКТИВНЫ")
+    print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
     print(f"📊 Отчёт: только прогулы выделены красным")
     print(f"📅 Расписание пар:")
     for i in range(1, 7):
         print(f"   {i}. {LESSON_TIMES[i]}")
     print("=" * 60)
-    print("⚡ Статус: Ожидание команд...")
-    print("=" * 60)
     
-    try:
-        while True:
-    try:
-        print("🔄 Запуск бота...")
-        bot.polling(none_stop=False, interval=1, timeout=30)
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        print("🔄 Перезапуск через 10 секунд...")
-        time.sleep(10)
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        import time
-        time.sleep(10)
-
+    # Бесконечный цикл с перезапуском при ошибках
+    while True:
+        try:
+            print("🔄 Запуск polling...")
+            bot.polling(none_stop=False, interval=1, timeout=30)
+        except requests.exceptions.ReadTimeout:
+            print("⚠️ Timeout Telegram API, перезапуск через 5 секунд...")
+            time.sleep(5)
+            continue
+        except requests.exceptions.ConnectionError:
+            print("⚠️ Ошибка соединения, перезапуск через 10 секунд...")
+            time.sleep(10)
+            continue
+        except Exception as e:
+            print(f"❌ Неожиданная ошибка: {e}")
+            print("🔄 Перезапуск через 10 секунд...")
+            time.sleep(10)
+            continue
