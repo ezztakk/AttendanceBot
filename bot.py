@@ -1520,7 +1520,7 @@ def get_report_menu(message):
     bot.register_next_step_handler(msg, generate_monthly_report)
 
 def generate_monthly_report(message):
-    """Генерирует отчёт с правильным выделением прогулов"""
+    """Генерирует отчёт с цветовой индикацией прогулов"""
     try:
         if message.text.lower() == 'текущий':
             month_year = datetime.date.today().strftime("%m.%Y")
@@ -1550,6 +1550,7 @@ def generate_monthly_report(message):
         
         all_dates = sorted(filtered['Дата'].dt.strftime('%d.%m.%Y').unique())
         
+        # ========== ЛИСТ ПОСЕЩАЕМОСТИ ==========
         attendance_matrix = []
         for student in all_students:
             row = {'Студент': student}
@@ -1577,6 +1578,7 @@ def generate_monthly_report(message):
         
         df_attendance = pd.DataFrame(attendance_matrix)
         
+        # ========== ЛИСТ СТАТИСТИКИ ==========
         stats_data = []
         for student in all_students:
             student_records = filtered[filtered['Студент'] == student]
@@ -1594,7 +1596,7 @@ def generate_monthly_report(message):
                 'Студент': student,
                 'Всего занятий': total_classes,
                 '✅ Присутствовал': present,
-                '❌ ПРОГУЛ (неуваж.)': unexcused,
+                '❌ ПРОГУЛЫ': unexcused,
                 '🤒 Болел': sick,
                 '📄 Уважительная причина': excused,
                 '❓ Иная причина': other,
@@ -1603,15 +1605,16 @@ def generate_monthly_report(message):
         
         df_stats = pd.DataFrame(stats_data)
         
-        total_unexcused = df_stats['❌ ПРОГУЛ (неуваж.)'].sum()
-        students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛ (неуваж.)'] > 0])
+        # ========== ИТОГИ ==========
+        total_unexcused = df_stats['❌ ПРОГУЛЫ'].sum()
+        students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛЫ'] > 0])
         
         summary_data = {
             'Показатель': [
                 'Всего занятий в месяце',
                 'Всего студентов',
                 'Студентов с прогулами',
-                'ВСЕГО ПРОГУЛОВ (неуваж.)',
+                'ВСЕГО ПРОГУЛОВ',
                 'Среднее число прогулов',
                 'Максимум прогулов у одного студента'
             ],
@@ -1621,12 +1624,13 @@ def generate_monthly_report(message):
                 students_with_absences,
                 total_unexcused,
                 round(total_unexcused / len(all_students), 1) if len(all_students) > 0 else 0,
-                df_stats['❌ ПРОГУЛ (неуваж.)'].max() if not df_stats.empty else 0
+                df_stats['❌ ПРОГУЛЫ'].max() if not df_stats.empty else 0
             ]
         }
         
         df_summary = pd.DataFrame(summary_data)
         
+        # ========== СОЗДАНИЕ EXCEL ==========
         output = BytesIO()
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1640,9 +1644,38 @@ def generate_monthly_report(message):
                 reasons_df.to_excel(writer, sheet_name='Причины', index=False)
             
             workbook = writer.book
-            worksheet_att = writer.sheets['Посещаемость']
             worksheet_stats = writer.sheets['Статистика']
             
+            # === НАСТРОЙКА ШИРИНЫ СТОЛБЦОВ ===
+            worksheet_stats.column_dimensions['A'].width = 25  # Студент
+            worksheet_stats.column_dimensions['B'].width = 15  # Всего занятий
+            worksheet_stats.column_dimensions['C'].width = 18  # Присутствовал
+            worksheet_stats.column_dimensions['D'].width = 15  # ПРОГУЛЫ
+            worksheet_stats.column_dimensions['E'].width = 12  # Болел
+            worksheet_stats.column_dimensions['F'].width = 20  # Уважительная причина
+            worksheet_stats.column_dimensions['G'].width = 15  # Иная причина
+            worksheet_stats.column_dimensions['H'].width = 15  # % посещения
+            
+            # === ЦВЕТОВАЯ ИНДИКАЦИЯ ДЛЯ ПРОГУЛОВ ===
+            from openpyxl.styles import PatternFill
+            
+            # Определяем цвета
+            green_fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')  # Без заливки (0 прогулов)
+            yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Жёлтый (≤ 10)
+            red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')     # Красный (> 10)
+            
+            # Применяем форматирование к столбцу D (ПРОГУЛЫ)
+            for row in range(2, len(df_stats) + 2):
+                cell = worksheet_stats.cell(row=row, column=4)  # Столбец D
+                if cell.value is not None:
+                    if cell.value == 0:
+                        cell.fill = green_fill
+                    elif cell.value <= 10:
+                        cell.fill = yellow_fill
+                    else:
+                        cell.fill = red_fill
+            
+            # Форматирование заголовков (жирные, синие)
             header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
             header_font = Font(color='FFFFFF', bold=True)
             
@@ -1653,38 +1686,12 @@ def generate_monthly_report(message):
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal='center')
             
-            worksheet_stats.column_dimensions['A'].width = 25
-            worksheet_stats.column_dimensions['B'].width = 15
-            worksheet_stats.column_dimensions['C'].width = 18
-            worksheet_stats.column_dimensions['D'].width = 22
-            worksheet_stats.column_dimensions['E'].width = 12
-            worksheet_stats.column_dimensions['F'].width = 20
-            worksheet_stats.column_dimensions['G'].width = 15
-            worksheet_stats.column_dimensions['H'].width = 15
-            
-            red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
-            red_font = Font(color='9C0006', bold=True)
-            
-            for row in range(2, len(df_stats) + 2):
-                cell = worksheet_stats.cell(row=row, column=4)
-                if cell.value and cell.value > 0:
-                    cell.fill = red_fill
-                    cell.font = red_font
-            
-            worksheet_att.column_dimensions['A'].width = 25
-            for col in range(2, len(all_dates) + 2):
-                col_letter = get_column_letter(col)
-                worksheet_att.column_dimensions[col_letter].width = 12
-            
-            worksheet_summary = writer.sheets['Итоги']
-            worksheet_summary.column_dimensions['A'].width = 35
-            worksheet_summary.column_dimensions['B'].width = 20
-            
+            # Автофильтр
             worksheet_stats.auto_filter.ref = worksheet_stats.dimensions
-            worksheet_att.auto_filter.ref = worksheet_att.dimensions
         
         output.seek(0)
         
+        # Текстовая сводка
         caption = (
             f"📊 *ОТЧЁТ ЗА {month_year}*\n\n"
             f"👥 *Группа:* {GROUP_NAME}\n"
@@ -1692,8 +1699,10 @@ def generate_monthly_report(message):
             f"👤 *Студентов:* {len(all_students)}\n"
             f"❌ *ВСЕГО ПРОГУЛОВ:* {total_unexcused}\n"
             f"⚠️ *Студентов с прогулами:* {students_with_absences}\n\n"
-            f"*Прогул = ❌ Отсутствовал (неуважительно)*\n"
-            f"*Болезнь и уважительные причины НЕ считаются прогулами*"
+            f"*Цветовая индикация в Excel:*\n"
+            f"🟢 0 прогулов — без заливки\n"
+            f"🟡 ≤ 10 прогулов — жёлтый\n"
+            f"🔴 > 10 прогулов — красный"
         )
         
         bot.send_chat_action(message.chat.id, 'upload_document')
@@ -1755,7 +1764,7 @@ if __name__ == "__main__":
     print(f"✅ Кнопки 'Выбрать все' и 'Очистить все' - ИСПРАВЛЕНЫ")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
-    print(f"📊 Отчёт: только прогулы выделены красным")
+    print(f"📊 Отчёт: цветовая индикация прогулов (0 - бел., ≤10 - жёлт., >10 - красн.)")
     print(f"📅 Расписание пар:")
     for i in range(1, 7):
         print(f"   {i}. {LESSON_TIMES[i]}")
