@@ -301,8 +301,8 @@ def start(message):
     user = get_user_data(message.chat.id)
     
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn1 = telebot.types.KeyboardButton('✅ Сегодня')
-    btn2 = telebot.types.KeyboardButton('📅 Другая дата')
+    btn1 = telebot.types.KeyboardButton('📅 Выбор даты')
+    btn2 = telebot.types.KeyboardButton('🔢 Выбрать пары')
     btn3 = telebot.types.KeyboardButton('👥 Выбрать подгруппу')
     btn4 = telebot.types.KeyboardButton('📝 Отметить студентов')
     btn5 = telebot.types.KeyboardButton('📊 Получить отчёт')
@@ -315,101 +315,76 @@ def start(message):
         '2': '2️⃣ подгруппа 2'
     }.get(user['selected_subgroup'], 'не выбрана')
     
+    selected_lessons = sorted(user['selected_lessons'])
+    lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}" if selected_lessons else "🔢 *Пары:* не выбраны"
+    
     bot.send_message(message.chat.id,
                     f"👋 *Система учёта посещаемости*\n"
                     f"👥 *Группа:* {GROUP_NAME}\n"
-                    f"👤 *Режим:* {subgroup_text}\n\n"
-                    f"📅 *Сегодня:* {user['current_date']}\n"
-                    f"🔢 *Текущая пара:* {list(user['selected_lessons'])[0]}\n\n"
+                    f"👤 *Режим:* {subgroup_text}\n"
+                    f"{lessons_text}\n"
+                    f"📅 *Дата:* {user['current_date']}\n\n"
                     f"Выберите действие:",
                     parse_mode='Markdown',
                     reply_markup=markup)
 
 # ==================== ВЫБОР ДАТЫ ====================
-@bot.message_handler(func=lambda message: message.text == '✅ Сегодня')
-def set_today(message):
-    user = get_user_data(message.chat.id)
+@bot.message_handler(func=lambda message: message.text == '📅 Выбор даты')
+def date_choice_menu(message):
+    """Меню выбора даты"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Сегодня", callback_data="date_today"),
+        telebot.types.InlineKeyboardButton("📅 Другая дата", callback_data="date_custom")
+    )
+    
+    bot.send_message(message.chat.id,
+                    "📅 *Выберите дату:*\n\n"
+                    "• ✅ Сегодня — установит текущую дату и определит пару\n"
+                    "• 📅 Другая дата — введите вручную",
+                    parse_mode='Markdown',
+                    reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'date_today')
+def set_today(call):
+    """Установить сегодняшнюю дату"""
+    user = get_user_data(call.message.chat.id)
     user['current_date'] = datetime.date.today().strftime("%d.%m.%Y")
     user['selected_lessons'] = {get_current_lesson()}
-    bot.send_message(message.chat.id,
-                    f"✅ Установлена сегодняшняя дата: {user['current_date']}\n"
-                    f"🔢 Текущая пара: {list(user['selected_lessons'])[0]}")
+    
+    bot.answer_callback_query(call.id, "✅ Дата установлена")
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ Установлена сегодняшняя дата: {user['current_date']}\n"
+             f"🔢 Текущая пара: {list(user['selected_lessons'])[0]}",
+        parse_mode='Markdown'
+    )
 
-@bot.message_handler(func=lambda message: message.text == '📅 Другая дата')
-def choose_other_date(message):
-    msg = bot.send_message(message.chat.id,
-                          "📅 *Введите дату*\n\n"
-                          "Формат: `ДД.ММ.ГГГГ`\n"
-                          "Пример: `25.02.2026`\n\n"
-                          "Или нажмите /start для отмены",
-                          parse_mode='Markdown')
-    bot.register_next_step_handler(msg, process_other_date)
+@bot.callback_query_handler(func=lambda call: call.data == 'date_custom')
+def ask_custom_date(call):
+    """Запросить ручной ввод даты"""
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="📅 *Введите дату*\n\n"
+             "Формат: `ДД.ММ.ГГГГ`\n"
+             "Пример: `25.02.2026`\n\n"
+             "Или нажмите /start для отмены",
+        parse_mode='Markdown'
+    )
+    bot.register_next_step_handler(call.message, process_custom_date)
 
-def process_other_date(message):
+def process_custom_date(message):
     user = get_user_data(message.chat.id)
     try:
         datetime.datetime.strptime(message.text, "%d.%m.%Y")
         user['current_date'] = message.text
-        # Пару оставляем ту же, что была выбрана
         bot.send_message(message.chat.id,
                         f"✅ Дата установлена: {message.text}")
     except ValueError:
-        bot.send_message(message.chat.id, "❌ Неверный формат! Используйте ДД.ММ.ГГГГ")
-
-# ==================== ВЫБОР ПОДГРУППЫ ====================
-@bot.message_handler(func=lambda message: message.text == '👥 Выбрать подгруппу')
-def choose_subgroup(message):
-    user = get_user_data(message.chat.id)
-    
-    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
-    markup.add(
-        telebot.types.InlineKeyboardButton(
-            "👥 Вся группа",
-            callback_data="subgroup_all"
-        ),
-        telebot.types.InlineKeyboardButton(
-            "1️⃣ Подгруппа 1",
-            callback_data="subgroup_1"
-        ),
-        telebot.types.InlineKeyboardButton(
-            "2️⃣ Подгруппа 2",
-            callback_data="subgroup_2"
-        )
-    )
-    
-    current = {
-        'all': '👥 Вся группа',
-        '1': '1️⃣ Подгруппа 1',
-        '2': '2️⃣ Подгруппа 2'
-    }.get(user['selected_subgroup'], 'не выбрана')
-    
-    bot.send_message(message.chat.id,
-                    f"👥 *Выбор подгруппы*\n\n"
-                    f"Текущий выбор: {current}\n\n"
-                    f"Выберите, кого хотите отмечать:",
-                    parse_mode='Markdown',
-                    reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('subgroup_'))
-def set_subgroup(call):
-    user = get_user_data(call.message.chat.id)
-    subgroup = call.data.split('_')[1]
-    user['selected_subgroup'] = subgroup
-    
-    subgroup_text = {
-        'all': 'вся группа',
-        '1': 'подгруппа 1',
-        '2': 'подгруппа 2'
-    }.get(subgroup, 'не выбрана')
-    
-    bot.answer_callback_query(call.id, f"✅ Выбрана {subgroup_text}")
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"✅ *Подгруппа выбрана*\n\n"
-             f"Теперь вы будете отмечать: {subgroup_text}",
-        parse_mode='Markdown'
-    )
+        bot.send_message(message.chat.id,
+                        "❌ Неверный формат! Используйте ДД.ММ.ГГГГ")
 
 # ==================== ВЫБОР ПАР (МНОЖЕСТВЕННЫЙ) ====================
 @bot.message_handler(func=lambda message: message.text == '🔢 Выбрать пары')
@@ -635,6 +610,61 @@ def lessons_done(call):
              f"📅 *Дата:* {user['current_date']}\n"
              f"🔢 *Выбранные пары:* {selected_text}\n\n"
              f"Теперь можно *отметить студентов* 👇",
+        parse_mode='Markdown'
+    )
+
+# ==================== ВЫБОР ПОДГРУППЫ ====================
+@bot.message_handler(func=lambda message: message.text == '👥 Выбрать подгруппу')
+def choose_subgroup(message):
+    user = get_user_data(message.chat.id)
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    markup.add(
+        telebot.types.InlineKeyboardButton(
+            "👥 Вся группа",
+            callback_data="subgroup_all"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "1️⃣ Подгруппа 1",
+            callback_data="subgroup_1"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "2️⃣ Подгруппа 2",
+            callback_data="subgroup_2"
+        )
+    )
+    
+    current = {
+        'all': '👥 Вся группа',
+        '1': '1️⃣ Подгруппа 1',
+        '2': '2️⃣ Подгруппа 2'
+    }.get(user['selected_subgroup'], 'не выбрана')
+    
+    bot.send_message(message.chat.id,
+                    f"👥 *Выбор подгруппы*\n\n"
+                    f"Текущий выбор: {current}\n\n"
+                    f"Выберите, кого хотите отмечать:",
+                    parse_mode='Markdown',
+                    reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('subgroup_'))
+def set_subgroup(call):
+    user = get_user_data(call.message.chat.id)
+    subgroup = call.data.split('_')[1]
+    user['selected_subgroup'] = subgroup
+    
+    subgroup_text = {
+        'all': 'вся группа',
+        '1': 'подгруппа 1',
+        '2': 'подгруппа 2'
+    }.get(subgroup, 'не выбрана')
+    
+    bot.answer_callback_query(call.id, f"✅ Выбрана {subgroup_text}")
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Подгруппа выбрана*\n\n"
+             f"Теперь вы будете отмечать: {subgroup_text}",
         parse_mode='Markdown'
     )
 
@@ -1459,10 +1489,9 @@ def show_settings(message):
                     f"📅 *Дата:* {user['current_date']}\n"
                     f"🔢 *Выбранные пары:* {lessons_text}\n\n"
                     f"*Изменить:*\n"
-                    f"✅ Сегодня - текущая дата\n"
-                    f"📅 Другая дата - ручной ввод\n"
-                    f"👥 Выбрать подгруппу\n"
+                    f"📅 Выбор даты\n"
                     f"🔢 Выбрать пары\n"
+                    f"👥 Выбрать подгруппу\n"
                     f"📝 Отметить студентов",
                     parse_mode='Markdown')
 
@@ -1475,6 +1504,7 @@ if __name__ == "__main__":
     print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Поддержка подгрупп - АКТИВНА")
     print(f"✅ Быстрые кнопки статусов")
+    print(f"✅ Объединённый выбор даты")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
