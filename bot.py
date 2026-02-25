@@ -206,6 +206,36 @@ LESSON_TIMES = {
     6: "17:20 - 18:50"
 }
 
+def get_current_lesson():
+    """Определяет текущую пару по времени"""
+    now = datetime.datetime.now()
+    current_time = now.strftime("%H:%M")
+    
+    for start, end, lesson_num in [
+        ("08:00", "09:30", 1),
+        ("09:40", "11:10", 2),
+        ("11:50", "13:20", 3),
+        ("13:30", "15:00", 4),
+        ("15:40", "17:10", 5),
+        ("17:20", "18:50", 6)
+    ]:
+        if start <= current_time <= end:
+            return lesson_num
+    
+    # Если сейчас нет пары, возвращаем последнюю прошедшую
+    for start, end, lesson_num in reversed([
+        ("08:00", "09:30", 1),
+        ("09:40", "11:10", 2),
+        ("11:50", "13:20", 3),
+        ("13:30", "15:00", 4),
+        ("15:40", "17:10", 5),
+        ("17:20", "18:50", 6)
+    ]):
+        if current_time > end:
+            return lesson_num
+    
+    return 1
+
 # Статусы с эмодзи (убрали 'other')
 STATUSES = {
     'present': {'emoji': '✅', 'text': 'Присутствовал'},
@@ -256,7 +286,8 @@ def get_user_data(user_id):
     if user_id not in user_data:
         user_data[user_id] = {
             'current_date': datetime.date.today().strftime("%d.%m.%Y"),
-            'selected_lessons': set(),  # Множественный выбор пар
+            'selected_lessons': {get_current_lesson()},
+            'selected_subgroup': 'all',  # 'all', '1', '2'
             'marking_mode': False,
             'current_page': 0,
             'students_list': [],
@@ -270,128 +301,115 @@ def start(message):
     user = get_user_data(message.chat.id)
     
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn1 = telebot.types.KeyboardButton('📅 Выбрать дату')
-    btn2 = telebot.types.KeyboardButton('🔢 Выбрать пары')
-    btn3 = telebot.types.KeyboardButton('📝 Отметить студентов')
-    btn4 = telebot.types.KeyboardButton('📊 Получить отчёт')
-    btn5 = telebot.types.KeyboardButton('ℹ️ Текущие настройки')
-    markup.add(btn1, btn2, btn3, btn4, btn5)
+    btn1 = telebot.types.KeyboardButton('✅ Сегодня')
+    btn2 = telebot.types.KeyboardButton('📅 Другая дата')
+    btn3 = telebot.types.KeyboardButton('👥 Выбрать подгруппу')
+    btn4 = telebot.types.KeyboardButton('📝 Отметить студентов')
+    btn5 = telebot.types.KeyboardButton('📊 Получить отчёт')
+    btn6 = telebot.types.KeyboardButton('ℹ️ Настройки')
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
     
-    # Формируем текст о выбранных парах
-    if user.get('selected_lessons'):
-        selected = sorted(user['selected_lessons'])
-        lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected))}"
-    else:
-        lessons_text = "🔢 *Пары:* не выбраны"
+    subgroup_text = {
+        'all': '👥 вся группа',
+        '1': '1️⃣ подгруппа 1',
+        '2': '2️⃣ подгруппа 2'
+    }.get(user['selected_subgroup'], 'не выбрана')
     
     bot.send_message(message.chat.id,
                     f"👋 *Система учёта посещаемости*\n"
-                    f"👥 *Группа:* {GROUP_NAME}\n\n"
-                    f"📅 *Дата:* {user['current_date']}\n"
-                    f"{lessons_text}\n\n"
+                    f"👥 *Группа:* {GROUP_NAME}\n"
+                    f"👤 *Режим:* {subgroup_text}\n\n"
+                    f"📅 *Сегодня:* {user['current_date']}\n"
+                    f"🔢 *Текущая пара:* {list(user['selected_lessons'])[0]}\n\n"
                     f"Выберите действие:",
                     parse_mode='Markdown',
                     reply_markup=markup)
 
 # ==================== ВЫБОР ДАТЫ ====================
-@bot.message_handler(func=lambda message: message.text == '📅 Выбрать дату')
-def choose_date(message):
+@bot.message_handler(func=lambda message: message.text == '✅ Сегодня')
+def set_today(message):
     user = get_user_data(message.chat.id)
-    
-    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
-    
-    today = datetime.date.today()
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton(
-            f"✅ Сегодня ({today.strftime('%d.%m')})",
-            callback_data=f"date_today"
-        )
-    )
-    
-    yesterday = today - datetime.timedelta(days=1)
-    markup.add(
-        telebot.types.InlineKeyboardButton(
-            f"📅 Вчера ({yesterday.strftime('%d.%m')})",
-            callback_data=f"date_{yesterday.strftime('%d.%m.%Y')}"
-        )
-    )
-    
-    tomorrow = today + datetime.timedelta(days=1)
-    markup.add(
-        telebot.types.InlineKeyboardButton(
-            f"📅 Завтра ({tomorrow.strftime('%d.%m')})",
-            callback_data=f"date_{tomorrow.strftime('%d.%m.%Y')}"
-        )
-    )
-    
-    for i in range(2, 8):
-        other_date = today - datetime.timedelta(days=i)
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                f"{other_date.strftime('%d.%m')}",
-                callback_data=f"date_{other_date.strftime('%d.%m.%Y')}"
-            )
-        )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton(
-            "📝 Ввести другую дату",
-            callback_data="date_custom"
-        )
-    )
-    
+    user['current_date'] = datetime.date.today().strftime("%d.%m.%Y")
+    user['selected_lessons'] = {get_current_lesson()}
     bot.send_message(message.chat.id,
-                    f"📅 *Выберите дату:*\n\n"
-                    f"Сейчас выбрано: *{user['current_date']}*",
-                    parse_mode='Markdown',
-                    reply_markup=markup)
+                    f"✅ Установлена сегодняшняя дата: {user['current_date']}\n"
+                    f"🔢 Текущая пара: {list(user['selected_lessons'])[0]}")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('date_'))
-def handle_date_selection(call):
-    user = get_user_data(call.message.chat.id)
-    
-    if call.data == 'date_today':
-        new_date = datetime.date.today().strftime("%d.%m.%Y")
-        user['current_date'] = new_date
-        bot.answer_callback_query(call.id, f"✅ Выбрана сегодняшняя дата")
-        
-    elif call.data == 'date_custom':
-        msg = bot.send_message(call.message.chat.id,
-                              "📝 *Введите дату в формате ДД.ММ.ГГГГ*\n"
-                              "Пример: 25.03.2024")
-        bot.register_next_step_handler(msg, process_custom_date)
-        return
-    else:
-        new_date = call.data[5:]
-        user['current_date'] = new_date
-        bot.answer_callback_query(call.id, f"✅ Дата выбрана: {new_date}")
-    
-    safe_edit_message(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"📅 *Дата установлена:* {user['current_date']}\n\n"
-             f"Теперь выберите пары и отмечайте студентов.",
-        parse_mode='Markdown'
-    )
+@bot.message_handler(func=lambda message: message.text == '📅 Другая дата')
+def choose_other_date(message):
+    msg = bot.send_message(message.chat.id,
+                          "📅 *Введите дату*\n\n"
+                          "Формат: `ДД.ММ.ГГГГ`\n"
+                          "Пример: `25.02.2026`\n\n"
+                          "Или нажмите /start для отмены",
+                          parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_other_date)
 
-def process_custom_date(message):
+def process_other_date(message):
     user = get_user_data(message.chat.id)
-    
     try:
         datetime.datetime.strptime(message.text, "%d.%m.%Y")
         user['current_date'] = message.text
-        
+        # Пару оставляем ту же, что была выбрана
         bot.send_message(message.chat.id,
-                        f"✅ *Дата установлена:* {message.text}",
-                        parse_mode='Markdown')
-        
+                        f"✅ Дата установлена: {message.text}")
     except ValueError:
-        bot.send_message(message.chat.id,
-                        "❌ *Неверный формат даты!*\n"
-                        "Используйте: ДД.ММ.ГГГГ\n"
-                        "Пример: 25.03.2024",
-                        parse_mode='Markdown')
+        bot.send_message(message.chat.id, "❌ Неверный формат! Используйте ДД.ММ.ГГГГ")
+
+# ==================== ВЫБОР ПОДГРУППЫ ====================
+@bot.message_handler(func=lambda message: message.text == '👥 Выбрать подгруппу')
+def choose_subgroup(message):
+    user = get_user_data(message.chat.id)
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    markup.add(
+        telebot.types.InlineKeyboardButton(
+            "👥 Вся группа",
+            callback_data="subgroup_all"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "1️⃣ Подгруппа 1",
+            callback_data="subgroup_1"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "2️⃣ Подгруппа 2",
+            callback_data="subgroup_2"
+        )
+    )
+    
+    current = {
+        'all': '👥 Вся группа',
+        '1': '1️⃣ Подгруппа 1',
+        '2': '2️⃣ Подгруппа 2'
+    }.get(user['selected_subgroup'], 'не выбрана')
+    
+    bot.send_message(message.chat.id,
+                    f"👥 *Выбор подгруппы*\n\n"
+                    f"Текущий выбор: {current}\n\n"
+                    f"Выберите, кого хотите отмечать:",
+                    parse_mode='Markdown',
+                    reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('subgroup_'))
+def set_subgroup(call):
+    user = get_user_data(call.message.chat.id)
+    subgroup = call.data.split('_')[1]
+    user['selected_subgroup'] = subgroup
+    
+    subgroup_text = {
+        'all': 'вся группа',
+        '1': 'подгруппа 1',
+        '2': 'подгруппа 2'
+    }.get(subgroup, 'не выбрана')
+    
+    bot.answer_callback_query(call.id, f"✅ Выбрана {subgroup_text}")
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Подгруппа выбрана*\n\n"
+             f"Теперь вы будете отмечать: {subgroup_text}",
+        parse_mode='Markdown'
+    )
 
 # ==================== ВЫБОР ПАР (МНОЖЕСТВЕННЫЙ) ====================
 @bot.message_handler(func=lambda message: message.text == '🔢 Выбрать пары')
@@ -508,12 +526,11 @@ def toggle_lesson(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_all')
 def lessons_all(call):
-    """Выбрать все пары - БЕЗ РЕКУРСИИ"""
+    """Выбрать все пары"""
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = {1, 2, 3, 4, 5, 6}
     bot.answer_callback_query(call.id, "✅ Выбраны все пары")
     
-    # Создаём новую клавиатуру без вызова toggle_lesson
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
     for num in range(1, 7):
@@ -554,12 +571,11 @@ def lessons_all(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_clear')
 def lessons_clear(call):
-    """Очистить выбор всех пар - БЕЗ РЕКУРСИИ"""
+    """Очистить выбор всех пар"""
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = set()
     bot.answer_callback_query(call.id, "❌ Выбор очищен")
     
-    # Создаём новую клавиатуру без вызова toggle_lesson
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
     for num in range(1, 7):
@@ -855,10 +871,17 @@ def mark_students(message):
     try:
         # Используем кэшированный список студентов
         all_students = cache.get_students()
-        students = all_students[1:] if len(all_students) > 1 else []
+        all_students_list = all_students[1:] if len(all_students) > 1 else []
+        
+        # Фильтруем по подгруппе
+        if user['selected_subgroup'] != 'all':
+            students = [s for s in all_students_list 
+                       if len(s) >= 3 and str(s[2]) == user['selected_subgroup']]
+        else:
+            students = all_students_list
         
         if len(students) <= 0:
-            bot.send_message(message.chat.id, "❌ Сначала добавьте студентов!")
+            bot.send_message(message.chat.id, "❌ Нет студентов в выбранной подгруппе!")
             return
         
         user['students_list'] = students
@@ -878,8 +901,15 @@ def mark_students(message):
         selected_lessons = sorted(user['selected_lessons'])
         lessons_text = ", ".join(map(str, selected_lessons))
         
+        subgroup_text = {
+            'all': 'вся группа',
+            '1': 'подгруппа 1',
+            '2': 'подгруппа 2'
+        }.get(user['selected_subgroup'], 'не выбрана')
+        
         bot.send_message(message.chat.id,
-                        f"📌 *Отметка для нескольких пар*\n"
+                        f"📌 *Отметка*\n"
+                        f"👥 {subgroup_text}\n"
                         f"🔢 *Пары:* {lessons_text}\n"
                         f"📅 *Дата:* {user['current_date']}\n\n"
                         f"*Отметки будут применены ко ВСЕМ выбранным парам!*",
@@ -1052,9 +1082,16 @@ def save_reason_for_selected(message):
     user['selected_students'] = set()
     del user['pending_status']
     
+    subgroup_text = {
+        'all': 'вся группа',
+        '1': 'подгруппа 1',
+        '2': 'подгруппа 2'
+    }.get(user['selected_subgroup'], 'не выбрана')
+    
     bot.send_message(
         message.chat.id,
         f"✅ *Отмечено {len(pending['students'])} студентов*\n"
+        f"👥 {subgroup_text}\n"
         f"📝 *Причина:* {reason}\n"
         f"🔢 *Пары:* {', '.join(map(str, sorted(user['selected_lessons'])))}"
     )
@@ -1082,7 +1119,14 @@ def refresh_students_list(chat_id, message_id=None):
     
     try:
         all_students = cache.get_students()
-        students = all_students[1:] if len(all_students) > 1 else []
+        all_students_list = all_students[1:] if len(all_students) > 1 else []
+        
+        # Фильтруем по подгруппе
+        if user['selected_subgroup'] != 'all':
+            students = [s for s in all_students_list 
+                       if len(s) >= 3 and str(s[2]) == user['selected_subgroup']]
+        else:
+            students = all_students_list
         
         old_selection = user.get('selected_students', set())
         user['students_list'] = students
@@ -1133,7 +1177,13 @@ def page_prev(call):
         students = user.get('students_list', [])
         if not students:
             all_students = cache.get_students()
-            students = all_students[1:] if len(all_students) > 1 else []
+            all_students_list = all_students[1:] if len(all_students) > 1 else []
+            
+            if user['selected_subgroup'] != 'all':
+                students = [s for s in all_students_list 
+                           if len(s) >= 3 and str(s[2]) == user['selected_subgroup']]
+            else:
+                students = all_students_list
             user['students_list'] = students
         
         existing_marks = {}
@@ -1381,18 +1431,19 @@ def generate_monthly_report(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка генерации отчёта: {str(e)}")
 
-# ==================== ТЕКУЩИЕ НАСТРОЙКИ ====================
-@bot.message_handler(func=lambda message: message.text == 'ℹ️ Текущие настройки')
-def show_current_settings(message):
+# ==================== НАСТРОЙКИ ====================
+@bot.message_handler(func=lambda message: message.text == 'ℹ️ Настройки')
+def show_settings(message):
     user = get_user_data(message.chat.id)
     
-    if user.get('selected_lessons'):
-        selected = sorted(user['selected_lessons'])
-        lessons_text = ", ".join(map(str, selected))
-        time_slots = "\n".join([f"   {i}. {LESSON_TIMES[i]}" for i in selected])
-    else:
-        lessons_text = "не выбраны"
-        time_slots = "   не выбраны"
+    subgroup_text = {
+        'all': 'вся группа',
+        '1': 'подгруппа 1',
+        '2': 'подгруппа 2'
+    }.get(user['selected_subgroup'], 'не выбрана')
+    
+    selected_lessons = sorted(user['selected_lessons'])
+    lessons_text = ", ".join(map(str, selected_lessons)) if selected_lessons else "не выбраны"
     
     try:
         all_students = cache.get_students()
@@ -1403,14 +1454,16 @@ def show_current_settings(message):
     bot.send_message(message.chat.id,
                     f"⚙️ *Текущие настройки:*\n\n"
                     f"👥 *Группа:* {GROUP_NAME}\n"
-                    f"👤 *Студентов:* {student_count}\n\n"
+                    f"👤 *Студентов:* {student_count}\n"
+                    f"👥 *Режим:* {subgroup_text}\n\n"
                     f"📅 *Дата:* {user['current_date']}\n"
-                    f"🔢 *Выбранные пары:* {lessons_text}\n"
-                    f"⏰ *Время пар:*\n{time_slots}\n\n"
+                    f"🔢 *Выбранные пары:* {lessons_text}\n\n"
                     f"*Изменить:*\n"
-                    f"📅 - выбрать дату\n"
-                    f"🔢 - выбрать пары\n"
-                    f"📝 - отметить студентов",
+                    f"✅ Сегодня - текущая дата\n"
+                    f"📅 Другая дата - ручной ввод\n"
+                    f"👥 Выбрать подгруппу\n"
+                    f"🔢 Выбрать пары\n"
+                    f"📝 Отметить студентов",
                     parse_mode='Markdown')
 
 # ==================== ЗАПУСК ====================
@@ -1420,12 +1473,12 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"📍 Группа: {GROUP_NAME}")
     print(f"✅ Множественный выбор пар - АКТИВЕН")
-    print(f"✅ Множественный выбор студентов - АКТИВЕН")
-    print(f"✅ Быстрые кнопки статусов (без лишних переходов)")
+    print(f"✅ Поддержка подгрупп - АКТИВНА")
+    print(f"✅ Быстрые кнопки статусов")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
-    print(f"📊 Отчёт: только прогулы, цветовая индикация (0 - бел., ≤10 - жёлт., >10 - красн.)")
+    print(f"📊 Отчёт: цветовая индикация прогулов")
     print(f"📅 Расписание пар:")
     for i in range(1, 7):
         print(f"   {i}. {LESSON_TIMES[i]}")
