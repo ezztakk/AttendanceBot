@@ -378,20 +378,31 @@ def get_user_data(user_id):
         }
     return user_data[user_id]
 
-# =================== ПОЛУЧЕНИЕ ОТМЕЧЕННЫХ ПАР ===================
-
+# ==================== ПОЛУЧЕНИЕ ОТМЕЧЕННЫХ ПАР ====================
 def get_marked_lessons(year, month):
-    """Получает список отмеченных пар за месяц"""
+    """Получает список отмеченных пар за указанный месяц"""
     try:
         records = attendance_sheet.get_all_records()
         marked = []
         seen = set()
         
+        # Начало и конец месяца для фильтрации
+        start_date = datetime.date(year, month, 1)
+        if month == 12:
+            end_date = datetime.date(year + 1, 1, 1)
+        else:
+            end_date = datetime.date(year, month + 1, 1)
+        
         for record in records:
             date_str = record.get('Дата', '')
+            if not date_str:
+                continue
+                
             try:
                 date = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
-                if date.year == year and date.month == month:
+                
+                # Проверяем, что дата в нужном месяце
+                if start_date <= date < end_date:
                     lesson_num = int(record.get('Пара', 0))
                     pair_key = f"{date_str}_{lesson_num}"
                     
@@ -401,7 +412,8 @@ def get_marked_lessons(year, month):
                             'date': date_str,
                             'lesson': lesson_num
                         })
-            except:
+            except Exception as e:
+                print(f"⚠️ Ошибка обработки даты {date_str}: {e}")
                 continue
         
         print(f"📊 Найдено уникальных пар за {month}.{year}: {len(marked)}")
@@ -410,7 +422,7 @@ def get_marked_lessons(year, month):
     except Exception as e:
         print(f"❌ Ошибка получения отмеченных пар: {e}")
         return []
-        
+
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -449,11 +461,15 @@ def start(message):
 def show_status(message):
     user = get_user_data(message.chat.id)
     
+    # БЕРЁМ ТЕКУЩУЮ ДАТУ ИЗ РЕАЛЬНОГО ВРЕМЕНИ!
     today = datetime.date.today()
     year = today.year
     month = today.month
     
-    # Получаем все пары в месяце
+    # Для отладки (чтобы видеть, что происходит)
+    print(f"📅 Текущая дата: {today}, год: {year}, месяц: {month}")
+    
+    # Получаем все пары в месяце из расписания
     all_lessons = schedule_manager.get_all_lessons_in_month(year, month, user['selected_subgroup'])
     
     # Получаем отмеченные пары
@@ -463,12 +479,20 @@ def show_status(message):
     marked_count = len(marked_lessons)
     remaining = total - marked_count
     
+    # Название месяца по-русски
+    month_names = {
+        1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+        5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+        9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+    }
+    month_name = month_names[month]
+    
     # Находим следующую неотмеченную пару
     next_lesson = schedule_manager.get_next_unmarked_lesson(year, month, marked_lessons, user['selected_subgroup'])
     
     # Формируем сообщение
     status_text = f"📊 *СОСТОЯНИЕ ГРУППЫ*\n\n"
-    status_text += f"📅 *{datetime.date(year, month, 1).strftime('%B %Y')}*\n"
+    status_text += f"📅 *{month_name} {year}*\n"
     status_text += f"✅ Отмечено: {marked_count} из {total} пар\n"
     status_text += f"📌 Осталось: {remaining} пар\n\n"
     
@@ -1619,4 +1643,3 @@ if __name__ == "__main__":
             print("🔄 Перезапуск через 10 секунд...")
             time.sleep(10)
             continue
-
