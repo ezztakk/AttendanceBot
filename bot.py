@@ -378,30 +378,39 @@ def get_user_data(user_id):
         }
     return user_data[user_id]
 
-# ==================== ПОЛУЧЕНИЕ ОТМЕЧЕННЫХ ПАР ====================
+# =================== ПОЛУЧЕНИЕ ОТМЕЧЕННЫХ ПАР ===================
+
 def get_marked_lessons(year, month):
     """Получает список отмеченных пар за месяц"""
     try:
         records = attendance_sheet.get_all_records()
         marked = []
+        seen = set()
         
         for record in records:
             date_str = record.get('Дата', '')
             try:
                 date = datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
                 if date.year == year and date.month == month:
-                    marked.append({
-                        'date': date_str,
-                        'lesson': int(record.get('Пара', 0))
-                    })
+                    lesson_num = int(record.get('Пара', 0))
+                    pair_key = f"{date_str}_{lesson_num}"
+                    
+                    if pair_key not in seen:
+                        seen.add(pair_key)
+                        marked.append({
+                            'date': date_str,
+                            'lesson': lesson_num
+                        })
             except:
                 continue
         
+        print(f"📊 Найдено уникальных пар за {month}.{year}: {len(marked)}")
         return marked
+        
     except Exception as e:
         print(f"❌ Ошибка получения отмеченных пар: {e}")
         return []
-
+        
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -1610,3 +1619,4 @@ if __name__ == "__main__":
             print("🔄 Перезапуск через 10 секунд...")
             time.sleep(10)
             continue
+
