@@ -13,6 +13,7 @@ import time
 from threading import Lock
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import csv
 
 # ==================== НАСТРОЙКИ ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -26,6 +27,110 @@ UNRESPECTFUL_STATUSES = ['Отсутствовал']  # ❌
 # Количество студентов на одной странице
 ITEMS_PER_PAGE = 10
 # ===================================================
+
+# ==================== КЛАСС ДЛЯ РАБОТЫ С РАСПИСАНИЕМ ====================
+class ScheduleManager:
+    """Класс для работы с расписанием из CSV-файла"""
+    
+    def __init__(self, filename='schedule.csv'):
+        self.schedule = {}
+        self.filename = filename
+        self.load_schedule()
+    
+    def load_schedule(self):
+        """Загружает расписание из CSV-файла"""
+        try:
+            with open(self.filename, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    day = row['day']
+                    week_type = row['week_type']
+                    lesson = int(row['lesson'])
+                    subgroup = row['subgroup']
+                    subject = row['subject']
+                    
+                    if day not in self.schedule:
+                        self.schedule[day] = {'odd': {}, 'even': {}}
+                    
+                    if lesson not in self.schedule[day][week_type]:
+                        self.schedule[day][week_type][lesson] = []
+                    
+                    self.schedule[day][week_type][lesson].append({
+                        'subgroup': subgroup,
+                        'subject': subject
+                    })
+            print(f"✅ Расписание загружено из {self.filename}")
+        except FileNotFoundError:
+            print(f"❌ Файл {self.filename} не найден")
+            print("⚠️ Бот будет работать без расписания")
+            self.schedule = {}
+        except Exception as e:
+            print(f"❌ Ошибка загрузки расписания: {e}")
+            self.schedule = {}
+    
+    def get_week_type(self, date):
+        """Определяет тип недели (odd - верхняя/нечётная, even - нижняя/чётная)"""
+        week_num = date.isocalendar()[1]
+        return 'odd' if week_num % 2 == 1 else 'even'
+    
+    def get_day_lessons(self, date, subgroup='all'):
+        """Получает список пар на указанную дату для подгруппы"""
+        day_name = date.strftime('%A')  # Monday, Tuesday, etc.
+        week_type = self.get_week_type(date)
+        
+        lessons = []
+        if day_name in self.schedule and week_type in self.schedule[day_name]:
+            for lesson_num, lesson_data in self.schedule[day_name][week_type].items():
+                # Проверяем, есть ли пара для этой подгруппы
+                for item in lesson_data:
+                    if item['subgroup'] == 'all' or item['subgroup'] == subgroup:
+                        lessons.append({
+                            'number': lesson_num,
+                            'subject': item['subject'],
+                            'for_subgroup': item['subgroup']
+                        })
+                        break
+        return sorted(lessons, key=lambda x: x['number'])
+    
+    def get_current_lesson(self, date, current_time, subgroup='all'):
+        """Определяет текущую пару по времени с учётом расписания"""
+        lessons = self.get_day_lessons(date, subgroup)
+        
+        # Соответствие номера пары и времени
+        time_map = {
+            1: ("08:00", "09:30"),
+            2: ("09:40", "11:10"),
+            3: ("11:50", "13:20"),
+            4: ("13:30", "15:00"),
+            5: ("15:40", "17:10"),
+            6: ("17:20", "18:50")
+        }
+        
+        for lesson in lessons:
+            start_end = time_map.get(lesson['number'])
+            if start_end:
+                start, end = start_end
+                if start <= current_time <= end:
+                    return lesson
+        
+        # Если сейчас нет пары, возвращаем последнюю прошедшую
+        for lesson in reversed(lessons):
+            start_end = time_map.get(lesson['number'])
+            if start_end:
+                end = start_end[1]
+                if current_time > end:
+                    return lesson
+        
+        return lessons[0] if lessons else None
+    
+    def lesson_time_to_number(self, time_str):
+        """Преобразует время в номер пары"""
+        time_map = {
+            "08:00": 1, "09:40": 2, "11:50": 3,
+            "13:30": 4, "15:40": 5, "17:20": 6
+        }
+        return time_map.get(time_str, 0)
+# ====================================================
 
 # ==================== НАСТРОЙКА СЕССИИ ====================
 session = requests.Session()
@@ -196,7 +301,7 @@ class ImprovedSheetsCache(SheetsCache):
                     raise
 # ====================================================
 
-# Расписание пар
+# Расписание пар (оставляем для справки)
 LESSON_TIMES = {
     1: "08:00 - 09:30",
     2: "09:40 - 11:10",
@@ -206,37 +311,17 @@ LESSON_TIMES = {
     6: "17:20 - 18:50"
 }
 
-def get_current_lesson():
-    """Определяет текущую пару по времени"""
+def get_current_lesson(subgroup='all'):
+    """Определяет текущую пару по времени с учётом расписания"""
     now = datetime.datetime.now()
     current_time = now.strftime("%H:%M")
     
-    for start, end, lesson_num in [
-        ("08:00", "09:30", 1),
-        ("09:40", "11:10", 2),
-        ("11:50", "13:20", 3),
-        ("13:30", "15:00", 4),
-        ("15:40", "17:10", 5),
-        ("17:20", "18:50", 6)
-    ]:
-        if start <= current_time <= end:
-            return lesson_num
-    
-    # Если сейчас нет пары, возвращаем последнюю прошедшую
-    for start, end, lesson_num in reversed([
-        ("08:00", "09:30", 1),
-        ("09:40", "11:10", 2),
-        ("11:50", "13:20", 3),
-        ("13:30", "15:00", 4),
-        ("15:40", "17:10", 5),
-        ("17:20", "18:50", 6)
-    ]):
-        if current_time > end:
-            return lesson_num
-    
-    return 1
+    lesson = schedule_manager.get_current_lesson(now, current_time, subgroup)
+    if lesson:
+        return lesson['number']
+    return None
 
-# Статусы с эмодзи (убрали 'other')
+# Статусы с эмодзи
 STATUSES = {
     'present': {'emoji': '✅', 'text': 'Присутствовал'},
     'absent': {'emoji': '❌', 'text': 'Отсутствовал'},
@@ -271,6 +356,9 @@ try:
     cache = ImprovedSheetsCache()
     print("✅ Улучшенная система кэширования запущена")
     
+    # Инициализируем планировщик расписания
+    schedule_manager = ScheduleManager('schedule.csv')
+    
 except Exception as e:
     print(f"❌ Ошибка подключения к Google: {e}")
     exit()
@@ -284,9 +372,13 @@ user_data = {}
 
 def get_user_data(user_id):
     if user_id not in user_data:
+        # Определяем текущую пару
+        current_lesson = get_current_lesson()
+        selected_lessons = {current_lesson} if current_lesson else set()
+        
         user_data[user_id] = {
             'current_date': datetime.date.today().strftime("%d.%m.%Y"),
-            'selected_lessons': {get_current_lesson()},
+            'selected_lessons': selected_lessons,
             'selected_subgroup': 'all',  # 'all', '1', '2'
             'marking_mode': False,
             'current_page': 0,
@@ -350,14 +442,22 @@ def set_today(call):
     """Установить сегодняшнюю дату"""
     user = get_user_data(call.message.chat.id)
     user['current_date'] = datetime.date.today().strftime("%d.%m.%Y")
-    user['selected_lessons'] = {get_current_lesson()}
+    
+    # Определяем текущую пару для выбранной подгруппы
+    current_lesson = get_current_lesson(user['selected_subgroup'])
+    if current_lesson:
+        user['selected_lessons'] = {current_lesson}
+        lesson_text = f"🔢 Текущая пара: {current_lesson}"
+    else:
+        user['selected_lessons'] = set()
+        lesson_text = "🔢 Сегодня нет пар"
     
     bot.answer_callback_query(call.id, "✅ Дата установлена")
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"✅ Установлена сегодняшняя дата: {user['current_date']}\n"
-             f"🔢 Текущая пара: {list(user['selected_lessons'])[0]}",
+             f"{lesson_text}",
         parse_mode='Markdown'
     )
 
@@ -380,28 +480,46 @@ def process_custom_date(message):
     try:
         datetime.datetime.strptime(message.text, "%d.%m.%Y")
         user['current_date'] = message.text
+        # При ручном вводе пары не сбрасываем
         bot.send_message(message.chat.id,
                         f"✅ Дата установлена: {message.text}")
     except ValueError:
         bot.send_message(message.chat.id,
                         "❌ Неверный формат! Используйте ДД.ММ.ГГГГ")
 
-# ==================== ВЫБОР ПАР (МНОЖЕСТВЕННЫЙ) ====================
+# ==================== ВЫБОР ПАР ====================
 @bot.message_handler(func=lambda message: message.text == '🔢 Выбрать пары')
 def choose_lessons(message):
     user = get_user_data(message.chat.id)
     
+    # Получаем актуальные пары на выбранную дату для выбранной подгруппы
+    try:
+        current_date = datetime.datetime.strptime(user['current_date'], "%d.%m.%Y").date()
+    except:
+        current_date = datetime.date.today()
+    
+    available_lessons = schedule_manager.get_day_lessons(
+        current_date, 
+        user['selected_subgroup']
+    )
+    
+    if not available_lessons:
+        bot.send_message(message.chat.id,
+                        "❌ На выбранную дату нет пар в расписании")
+        return
+    
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
-    # Кнопки для всех пар
-    for lesson_num in range(1, 7):
-        time_slot = LESSON_TIMES.get(lesson_num, "")
+    # Кнопки для доступных пар
+    for lesson in available_lessons:
+        lesson_num = lesson['number']
+        subject = lesson['subject']
         
         # Отмечаем выбранные пары
         if lesson_num in user.get('selected_lessons', set()):
-            btn_text = f"✅ {lesson_num} пара ({time_slot})"
+            btn_text = f"✅ {lesson_num} - {subject}"
         else:
-            btn_text = f"{lesson_num} пара ({time_slot})"
+            btn_text = f"{lesson_num} - {subject}"
         
         markup.add(
             telebot.types.InlineKeyboardButton(
@@ -423,16 +541,13 @@ def choose_lessons(message):
     selected = user.get('selected_lessons', set())
     selected_text = f"✅ *Выбрано пар:* {len(selected)}" if selected else "❌ *Ничего не выбрано*"
     
+    # Показываем расписание
+    schedule_text = "\n".join([f"{l['number']}. {l['subject']}" for l in available_lessons])
+    
     bot.send_message(message.chat.id,
                     f"🔢 *ВЫБОР ПАР*\n\n"
                     f"{selected_text}\n\n"
-                    f"*Расписание:*\n"
-                    f"1. {LESSON_TIMES[1]}\n"
-                    f"2. {LESSON_TIMES[2]}\n"
-                    f"3. {LESSON_TIMES[3]}\n"
-                    f"4. {LESSON_TIMES[4]}\n"
-                    f"5. {LESSON_TIMES[5]}\n"
-                    f"6. {LESSON_TIMES[6]}\n\n"
+                    f"*Расписание на {user['current_date']}:*\n{schedule_text}\n\n"
                     f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
                     parse_mode='Markdown',
                     reply_markup=markup)
@@ -453,20 +568,38 @@ def toggle_lesson(call):
         user['selected_lessons'].add(lesson_num)
         bot.answer_callback_query(call.id, f"✅ Пара {lesson_num} выбрана")
     
-    # Обновляем меню
+    # Обновляем отображение
+    update_lessons_display(call)
+
+def update_lessons_display(call):
+    """Обновляет отображение списка пар"""
+    user = get_user_data(call.message.chat.id)
+    
+    try:
+        current_date = datetime.datetime.strptime(user['current_date'], "%d.%m.%Y").date()
+    except:
+        current_date = datetime.date.today()
+    
+    available_lessons = schedule_manager.get_day_lessons(
+        current_date, 
+        user['selected_subgroup']
+    )
+    
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
-    for num in range(1, 7):
-        time_slot = LESSON_TIMES.get(num, "")
-        if num in user['selected_lessons']:
-            btn_text = f"✅ {num} пара ({time_slot})"
+    for lesson in available_lessons:
+        lesson_num = lesson['number']
+        subject = lesson['subject']
+        
+        if lesson_num in user['selected_lessons']:
+            btn_text = f"✅ {lesson_num} - {subject}"
         else:
-            btn_text = f"{num} пара ({time_slot})"
+            btn_text = f"{lesson_num} - {subject}"
         
         markup.add(
             telebot.types.InlineKeyboardButton(
                 btn_text,
-                callback_data=f"toggle_lesson_{num}"
+                callback_data=f"toggle_lesson_{lesson_num}"
             )
         )
     
@@ -482,18 +615,14 @@ def toggle_lesson(call):
     selected = user['selected_lessons']
     selected_text = f"✅ *Выбрано пар:* {len(selected)}" if selected else "❌ *Ничего не выбрано*"
     
+    schedule_text = "\n".join([f"{l['number']}. {l['subject']}" for l in available_lessons])
+    
     safe_edit_message(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=f"🔢 *ВЫБОР ПАР*\n\n"
              f"{selected_text}\n\n"
-             f"*Расписание:*\n"
-             f"1. {LESSON_TIMES[1]}\n"
-             f"2. {LESSON_TIMES[2]}\n"
-             f"3. {LESSON_TIMES[3]}\n"
-             f"4. {LESSON_TIMES[4]}\n"
-             f"5. {LESSON_TIMES[5]}\n"
-             f"6. {LESSON_TIMES[6]}\n\n"
+             f"*Расписание на {user['current_date']}:*\n{schedule_text}\n\n"
              f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
         parse_mode='Markdown',
         reply_markup=markup
@@ -501,48 +630,23 @@ def toggle_lesson(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_all')
 def lessons_all(call):
-    """Выбрать все пары"""
+    """Выбрать все доступные пары"""
     user = get_user_data(call.message.chat.id)
-    user['selected_lessons'] = {1, 2, 3, 4, 5, 6}
-    bot.answer_callback_query(call.id, "✅ Выбраны все пары")
     
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    try:
+        current_date = datetime.datetime.strptime(user['current_date'], "%d.%m.%Y").date()
+    except:
+        current_date = datetime.date.today()
     
-    for num in range(1, 7):
-        time_slot = LESSON_TIMES.get(num, "")
-        btn_text = f"✅ {num} пара ({time_slot})"
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                btn_text,
-                callback_data=f"toggle_lesson_{num}"
-            )
-        )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
-        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
+    available_lessons = schedule_manager.get_day_lessons(
+        current_date, 
+        user['selected_subgroup']
     )
     
-    markup.add(
-        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
-    )
+    user['selected_lessons'] = {l['number'] for l in available_lessons}
+    bot.answer_callback_query(call.id, f"✅ Выбраны все пары ({len(available_lessons)})")
     
-    safe_edit_message(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"🔢 *ВЫБОР ПАР*\n\n"
-             f"✅ *Выбрано пар:* 6\n\n"
-             f"*Расписание:*\n"
-             f"1. {LESSON_TIMES[1]}\n"
-             f"2. {LESSON_TIMES[2]}\n"
-             f"3. {LESSON_TIMES[3]}\n"
-             f"4. {LESSON_TIMES[4]}\n"
-             f"5. {LESSON_TIMES[5]}\n"
-             f"6. {LESSON_TIMES[6]}\n\n"
-             f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
+    update_lessons_display(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_clear')
 def lessons_clear(call):
@@ -550,44 +654,7 @@ def lessons_clear(call):
     user = get_user_data(call.message.chat.id)
     user['selected_lessons'] = set()
     bot.answer_callback_query(call.id, "❌ Выбор очищен")
-    
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    
-    for num in range(1, 7):
-        time_slot = LESSON_TIMES.get(num, "")
-        btn_text = f"{num} пара ({time_slot})"
-        markup.add(
-            telebot.types.InlineKeyboardButton(
-                btn_text,
-                callback_data=f"toggle_lesson_{num}"
-            )
-        )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ Выбрать все", callback_data="lessons_all"),
-        telebot.types.InlineKeyboardButton("❌ Очистить все", callback_data="lessons_clear")
-    )
-    
-    markup.add(
-        telebot.types.InlineKeyboardButton("📌 Готово", callback_data="lessons_done")
-    )
-    
-    safe_edit_message(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"🔢 *ВЫБОР ПАР*\n\n"
-             f"❌ *Ничего не выбрано*\n\n"
-             f"*Расписание:*\n"
-             f"1. {LESSON_TIMES[1]}\n"
-             f"2. {LESSON_TIMES[2]}\n"
-             f"3. {LESSON_TIMES[3]}\n"
-             f"4. {LESSON_TIMES[4]}\n"
-             f"5. {LESSON_TIMES[5]}\n"
-             f"6. {LESSON_TIMES[6]}\n\n"
-             f"*Нажимайте на пары, чтобы выбрать/снять выбор*",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
+    update_lessons_display(call)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'lessons_done')
 def lessons_done(call):
@@ -1505,13 +1572,12 @@ if __name__ == "__main__":
     print(f"✅ Поддержка подгрупп - АКТИВНА")
     print(f"✅ Быстрые кнопки статусов")
     print(f"✅ Объединённый выбор даты")
+    print(f"✅ Расписание с названиями пар")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
     print(f"📊 Отчёт: цветовая индикация прогулов")
-    print(f"📅 Расписание пар:")
-    for i in range(1, 7):
-        print(f"   {i}. {LESSON_TIMES[i]}")
+    print(f"📅 Расписание пар загружено")
     print("=" * 60)
     
     # Бесконечный цикл с перезапуском при ошибках
