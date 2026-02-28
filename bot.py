@@ -69,14 +69,26 @@ class ScheduleManager:
             self.schedule = {}
     
     def get_week_type(self, date):
-        """Определяет тип недели (odd - верхняя/нечётная, even - нижняя/чётная)"""
+        """
+        Определяет тип недели:
+        - нижняя неделя (even) = нечётные недели (1, 3, 5, ...)
+        - верхняя неделя (odd) = чётные недели (2, 4, 6, ...)
+        """
+        # Получаем номер недели в году (1-52)
         week_num = date.isocalendar()[1]
-        return 'odd' if week_num % 2 == 1 else 'even'
+        
+        # Для 27.02.2026: 9-я неделя (нечётная) -> нижняя (even)
+        if week_num % 2 == 1:  # нечётные недели
+            return 'even'  # нижняя
+        else:               # чётные недели
+            return 'odd'   # верхняя
     
     def get_day_lessons(self, date, subgroup='all'):
         """Получает список пар на указанную дату для подгруппы"""
         day_name = date.strftime('%A')  # Monday, Tuesday, etc.
         week_type = self.get_week_type(date)
+        
+        print(f"📅 Дата: {date}, день: {day_name}, тип недели: {week_type}, подгруппа: {subgroup}")
         
         lessons = []
         if day_name in self.schedule and week_type in self.schedule[day_name]:
@@ -122,14 +134,6 @@ class ScheduleManager:
                     return lesson
         
         return lessons[0] if lessons else None
-    
-    def lesson_time_to_number(self, time_str):
-        """Преобразует время в номер пары"""
-        time_map = {
-            "08:00": 1, "09:40": 2, "11:50": 3,
-            "13:30": 4, "15:40": 5, "17:20": 6
-        }
-        return time_map.get(time_str, 0)
 # ====================================================
 
 # ==================== НАСТРОЙКА СЕССИИ ====================
@@ -1573,6 +1577,7 @@ if __name__ == "__main__":
     print(f"✅ Быстрые кнопки статусов")
     print(f"✅ Объединённый выбор даты")
     print(f"✅ Расписание с названиями пар")
+    print(f"✅ Тип недели: нижняя = нечётные недели")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
     print(f"✅ Батчевые операции - АКТИВНЫ")
     print(f"✅ Автоперезапуск при ошибках - АКТИВЕН")
