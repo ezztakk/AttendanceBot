@@ -122,6 +122,23 @@ class ScheduleManager:
         
         return all_lessons
     
+    def get_lessons_in_range(self, start_date, end_date, subgroup='all'):
+        """Получает все пары в указанном диапазоне дат"""
+        lessons = []
+        current_date = start_date
+        
+        while current_date <= end_date:
+            day_lessons = self.get_day_lessons(current_date, subgroup)
+            for lesson in day_lessons:
+                lessons.append({
+                    'date': current_date,
+                    'lesson': lesson['number'],
+                    'subject': lesson['subject']
+                })
+            current_date += datetime.timedelta(days=1)
+        
+        return lessons
+    
     def get_next_unmarked_lesson(self, year, month, marked_lessons, subgroup='all'):
         """Находит следующую неотмеченную пару"""
         all_lessons = self.get_all_lessons_in_month(year, month, subgroup)
@@ -318,7 +335,7 @@ LESSON_TIMES = {
     6: "17:20 - 18:50"
 }
 
-# Статусы с эмодзи
+# Статусы с эмодзи (теперь 'sick' не требует причины)
 STATUSES = {
     'present': {'emoji': '✅', 'text': 'Присутствовал'},
     'absent': {'emoji': '❌', 'text': 'Отсутствовал'},
@@ -416,7 +433,6 @@ def get_marked_lessons(year, month):
                 print(f"⚠️ Ошибка обработки даты {date_str}: {e}")
                 continue
         
-        print(f"📊 Найдено уникальных пар за {month}.{year}: {len(marked)}")
         return marked
         
     except Exception as e:
@@ -446,12 +462,33 @@ def start(message):
     selected_lessons = sorted(user['selected_lessons'])
     lessons_text = f"🔢 *Пары:* {', '.join(map(str, selected_lessons))}" if selected_lessons else "🔢 *Пары:* не выбраны"
     
+    # Добавляем информацию о прогрессе
+    today = datetime.date.today()
+    year = today.year
+    month = today.month
+    
+    all_lessons = schedule_manager.get_all_lessons_in_month(year, month, user['selected_subgroup'])
+    marked_lessons = get_marked_lessons(year, month)
+    
+    total = len(all_lessons)
+    marked_count = len(marked_lessons)
+    
+    month_names = {
+        1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+        5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+        9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+    }
+    month_name = month_names[month]
+    
+    progress_text = f"📊 *Прогресс за {month_name}:* {marked_count} из {total} пар"
+    
     bot.send_message(message.chat.id,
                     f"👋 *Система учёта посещаемости*\n"
                     f"👥 *Группа:* {GROUP_NAME}\n"
                     f"👤 *Режим:* {subgroup_text}\n"
                     f"{lessons_text}\n"
-                    f"📅 *Дата:* {user['current_date']}\n\n"
+                    f"📅 *Дата:* {user['current_date']}\n"
+                    f"{progress_text}\n\n"
                     f"Выберите действие:",
                     parse_mode='Markdown',
                     reply_markup=markup)
@@ -461,13 +498,9 @@ def start(message):
 def show_status(message):
     user = get_user_data(message.chat.id)
     
-    # БЕРЁМ ТЕКУЩУЮ ДАТУ ИЗ РЕАЛЬНОГО ВРЕМЕНИ!
     today = datetime.date.today()
     year = today.year
     month = today.month
-    
-    # Для отладки (чтобы видеть, что происходит)
-    print(f"📅 Текущая дата: {today}, год: {year}, месяц: {month}")
     
     # Получаем все пары в месяце из расписания
     all_lessons = schedule_manager.get_all_lessons_in_month(year, month, user['selected_subgroup'])
@@ -974,6 +1007,141 @@ def save_attendance_record(date, lessons, student, status, reason):
         print(f"❌ Ошибка сохранения: {e}")
         return 0
 
+# ==================== ПРИМЕНЕНИЕ БОЛЬНИЧНОГО НА ПЕРИОД ====================
+def apply_sick_leave(user, student_name, start_date, end_date):
+    """Применяет статус 'Болел' ко всем парам в указанном диапазоне"""
+    lessons_in_range = schedule_manager.get_lessons_in_range(
+        start_date, end_date, user['selected_subgroup']
+    )
+    
+    updated_count = 0
+    for lesson in lessons_in_range:
+        save_attendance_record(
+            lesson['date'].strftime("%d.%m.%Y"),
+            [lesson['lesson']],
+            student_name,
+            'Болел',
+            '-'
+        )
+        updated_count += 1
+    
+    return updated_count
+
+@bot.callback_query_handler(func=lambda call: call.data == 'sick_leave')
+def sick_leave_period(call):
+    user = get_user_data(call.message.chat.id)
+    
+    if not user.get('selected_students'):
+        bot.answer_callback_query(call.id, "❌ Сначала выберите студентов")
+        return
+    
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"📅 *Введите период больничного*\n\n"
+        f"Формат: `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`\n"
+        f"Пример: `01.03.2026-10.03.2026`\n\n"
+        f"👥 Будет применено для {len(user['selected_students'])} студентов\n"
+        f"📊 Система автоматически отметит все пары в этом периоде"
+    )
+    bot.register_next_step_handler(msg, process_sick_leave)
+
+def process_sick_leave(message):
+    user = get_user_data(message.chat.id)
+    
+    try:
+        # Парсим период
+        date_str = message.text.strip().split('-')
+        if len(date_str) != 2:
+            raise ValueError("Неверный формат")
+            
+        start_date = datetime.datetime.strptime(date_str[0].strip(), "%d.%m.%Y").date()
+        end_date = datetime.datetime.strptime(date_str[1].strip(), "%d.%m.%Y").date()
+        
+        if end_date < start_date:
+            bot.send_message(message.chat.id, "❌ Конечная дата раньше начальной!")
+            return
+        
+        total_updated = 0
+        for idx in user['selected_students']:
+            student_name = get_student_by_index(user, idx)
+            if student_name:
+                updated = apply_sick_leave(user, student_name, start_date, end_date)
+                total_updated += updated
+        
+        # Очищаем кэш отметок
+        cache.clear_attendance_cache()
+        
+        # Формируем сообщение о результате
+        day_count = (end_date - start_date).days + 1
+        lessons_count = total_updated // len(user['selected_students']) if user['selected_students'] else 0
+        
+        bot.send_message(
+            message.chat.id,
+            f"✅ *Больничный применён*\n\n"
+            f"👥 *Студентов:* {len(user['selected_students'])}\n"
+            f"📅 *Период:* {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
+            f"📆 *Дней в периоде:* {day_count}\n"
+            f"📊 *Всего обновлено отметок:* {total_updated}\n"
+            f"📌 *Пар на студента:* {lessons_count}"
+        )
+        
+        # Очищаем выбор
+        user['selected_students'] = set()
+        
+        # Предлагаем перейти к следующей неотмеченной
+        offer_next_unmarked(message.chat.id, user)
+        
+    except ValueError as e:
+        bot.send_message(message.chat.id, 
+                        "❌ Неверный формат! Используйте: `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`\n"
+                        "Пример: `01.03.2026-10.03.2026`")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+# ==================== ПРЕДЛОЖЕНИЕ СЛЕДУЮЩЕЙ ПАРЫ ====================
+def offer_next_unmarked(chat_id, user):
+    """Предлагает перейти к следующей неотмеченной паре"""
+    today = datetime.date.today()
+    year = today.year
+    month = today.month
+    
+    marked_lessons = get_marked_lessons(year, month)
+    next_lesson = schedule_manager.get_next_unmarked_lesson(
+        year, month, marked_lessons, user['selected_subgroup']
+    )
+    
+    if next_lesson:
+        day_name = {
+            'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср',
+            'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'вс'
+        }.get(next_lesson['date'].strftime('%A'), '??')
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                "✅ Да, перейти",
+                callback_data=f"goto_{next_lesson['date'].strftime('%d.%m.%Y')}_{next_lesson['lesson']}"
+            ),
+            telebot.types.InlineKeyboardButton(
+                "❌ Нет, позже",
+                callback_data="cancel_next"
+            )
+        )
+        
+        bot.send_message(
+            chat_id,
+            f"📅 *Следующая неотмеченная пара:*\n"
+            f"{next_lesson['date'].strftime('%d.%m')} ({day_name}) "
+            f"{next_lesson['lesson']} пара - {next_lesson['subject']}\n\n"
+            f"Перейти к отметке?",
+            reply_markup=markup
+        )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cancel_next')
+def cancel_next(call):
+    bot.answer_callback_query(call.id, "❌ Отменено")
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+
 # ==================== СОЗДАНИЕ КЛАВИАТУРЫ СТУДЕНТОВ ====================
 def create_students_markup(students, existing_marks, page, selected_students):
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
@@ -981,15 +1149,37 @@ def create_students_markup(students, existing_marks, page, selected_students):
     selected_count = len(selected_students)
     
     if selected_count > 0:
-        status_row = []
-        for status_code, info in STATUSES.items():
-            status_row.append(
-                telebot.types.InlineKeyboardButton(
-                    f"{info['emoji']} {info['text']}",
-                    callback_data=f"quick_{status_code}"
-                )
+        # Первая строка: ✅ и ❌
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                f"✅ Присутствовал",
+                callback_data="quick_present"
+            ),
+            telebot.types.InlineKeyboardButton(
+                f"❌ Отсутствовал",
+                callback_data="quick_absent"
             )
-        markup.add(*status_row)
+        )
+        
+        # Вторая строка: 🤒 и 📄
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                f"🤒 Болел",
+                callback_data="quick_sick"
+            ),
+            telebot.types.InlineKeyboardButton(
+                f"📄 Уважительная",
+                callback_data="quick_valid"
+            )
+        )
+        
+        # Третья строка: Больничный на период
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                f"📅 Больничный на период",
+                callback_data="sick_leave"
+            )
+        )
     
     total_students = len(students)
     total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
@@ -1087,18 +1277,23 @@ def show_students_list_with_checkboxes(chat_id, students, existing_marks, page=N
     
     page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
+    # Добавляем прогресс за день
+    day_progress = f"📊 Прогресс за день: {len(selected_lessons)} из {len(selected_lessons)} пар\n" if selected_lessons else ""
+    
     bot.send_message(
         chat_id,
         f"📝 *ОТМЕТКА ПОСЕЩАЕМОСТИ*\n\n"
         f"👥 *Группа:* {GROUP_NAME}\n"
         f"📅 *Дата:* {user['current_date']}\n"
         f"{lessons_text}"
+        f"{day_progress}"
         f"{selected_text}"
         f"{page_info}\n\n"
         f"*Как отмечать:*\n"
         f"1. Нажмите на студента, чтобы выбрать ☑️\n"
         f"2. Выберите статус для ВСЕХ выбранных\n\n"
-        f"*Статусы:* ✅ ❌ 🤒 📄",
+        f"*Статусы:* ✅ ❌ 🤒 📄\n"
+        f"*🤒 Больничный* — можно указать период",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -1174,6 +1369,8 @@ def update_students_message(chat_id, message_id, students, existing_marks):
     total_pages = (total_students + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     page_info = f"📄 Страница {page+1} из {total_pages}" if total_pages > 0 else "📄 Нет студентов"
     
+    day_progress = f"📊 Прогресс за день: {len(selected_lessons)} из {len(selected_lessons)} пар\n" if selected_lessons else ""
+    
     safe_edit_message(
         chat_id=chat_id,
         message_id=message_id,
@@ -1181,12 +1378,14 @@ def update_students_message(chat_id, message_id, students, existing_marks):
              f"👥 *Группа:* {GROUP_NAME}\n"
              f"📅 *Дата:* {user['current_date']}\n"
              f"{lessons_text}"
+             f"{day_progress}"
              f"{selected_text}"
              f"{page_info}\n\n"
              f"*Как отмечать:*\n"
              f"1. Нажмите на студента, чтобы выбрать ☑️\n"
              f"2. Выберите статус для ВСЕХ выбранных\n\n"
-             f"*Статусы:* ✅ ❌ 🤒 📄",
+             f"*Статусы:* ✅ ❌ 🤒 📄\n"
+             f"*🤒 Больничный* — можно указать период",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -1201,7 +1400,8 @@ def quick_apply_status(call):
         bot.answer_callback_query(call.id, "❌ Нет выбранных студентов")
         return
     
-    if status_code in ['sick', 'valid']:
+    # Только 'valid' требует причины (уважительная причина)
+    if status_code == 'valid':
         user['pending_status'] = {
             'status_code': status_code,
             'status_text': info['text'],
@@ -1218,6 +1418,7 @@ def quick_apply_status(call):
         bot.register_next_step_handler(msg, save_reason_for_selected)
         return
     
+    # Для остальных статусов (present, absent, sick) - без причины
     for idx in user['selected_students']:
         student_name = get_student_by_index(user, idx)
         if student_name:
@@ -1241,6 +1442,9 @@ def quick_apply_status(call):
                 existing_marks[student] = data
     
     update_students_message(call.message.chat.id, call.message.message_id, students, existing_marks)
+    
+    # Предлагаем перейти к следующей неотмеченной
+    offer_next_unmarked(call.message.chat.id, user)
 
 def save_reason_for_selected(message):
     user = get_user_data(message.chat.id)
@@ -1288,6 +1492,9 @@ def save_reason_for_selected(message):
             if student not in existing_marks:
                 existing_marks[student] = data
     show_students_list_with_checkboxes(message.chat.id, students, existing_marks, user['current_page'])
+    
+    # Предлагаем перейти к следующей неотмеченной
+    offer_next_unmarked(message.chat.id, user)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'back_to_list')
 def back_to_list(call):
@@ -1350,6 +1557,9 @@ def save_and_exit(call):
              f"Для нового действия нажмите /start",
         parse_mode='Markdown'
     )
+    
+    # Предлагаем перейти к следующей неотмеченной
+    offer_next_unmarked(call.message.chat.id, user)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'page_prev')
 def page_prev(call):
@@ -1615,8 +1825,12 @@ if __name__ == "__main__":
     print(f"✅ Множественный выбор пар - АКТИВЕН")
     print(f"✅ Поддержка подгрупп - АКТИВНА")
     print(f"✅ Быстрые кнопки статусов")
+    print(f"✅ Крупные кнопки для телефона")
     print(f"✅ Объединённый выбор даты")
     print(f"✅ Кнопка 'Состояние' с быстрым переходом")
+    print(f"✅ Автопереход к следующей паре")
+    print(f"✅ Прогресс при старте")
+    print(f"✅ Больничный на период")
     print(f"✅ Расписание с названиями пар")
     print(f"✅ Тип недели: нижняя = нечётные недели")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
