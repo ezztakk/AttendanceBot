@@ -254,8 +254,7 @@ class SheetsCache:
                             if student_name:
                                 filtered[student_name] = {
                                     'status': record.get('Статус', ''),
-                                    'reason': record.get('Причина', ''),
-                                    'time': record.get('Время', '')
+                                    'reason': record.get('Причина', '')
                                 }
                     self.attendance_cache[key] = filtered
                     self.attendance_timestamp[key] = current_time
@@ -992,7 +991,6 @@ def save_attendance_record(date, lessons, student, status, reason, force_overwri
                 reason,
                 time_now
             ])
-            print(f"💾 СОХРАНЯЕМ: {date} - {student} - {status} в {time_now}")
         
         if rows_to_delete:
             for row_num in sorted(rows_to_delete, reverse=True):
@@ -1014,33 +1012,24 @@ def save_attendance_record(date, lessons, student, status, reason, force_overwri
 
 # ==================== ПРИМЕНЕНИЕ БОЛЬНИЧНОГО НА ПЕРИОД ====================
 def apply_sick_leave(user, student_name, start_date, end_date):
-    """Применяет статус 'Болел' ко всем парам в указанном диапазоне"""
+    """Применяет статус 'Болел' ко всем парам в указанном диапазоне,
+    перезаписывая любые предыдущие отметки"""
     lessons_in_range = schedule_manager.get_lessons_in_range(
         start_date, end_date, user['selected_subgroup']
     )
     
     updated_count = 0
     for lesson in lessons_in_range:
-        date_str = lesson['date'].strftime("%d.%m.%Y")
-        lesson_num = lesson['lesson']
-        
-        print(f"🔄 Больничный: {student_name} на {date_str} пара {lesson_num}")
-        
-        # Сохраняем с force_overwrite=True
-        result = save_attendance_record(
-            date_str,
-            [lesson_num],
+        # Сохраняем с force_overwrite=True, чтобы перезаписать старые отметки
+        save_attendance_record(
+            lesson['date'].strftime("%d.%m.%Y"),
+            [lesson['lesson']],
             student_name,
             'Болел',
             '-',
             force_overwrite=True
         )
-        
-        if result > 0:
-            updated_count += 1
-            print(f"✅ Успешно сохранено")
-        else:
-            print(f"❌ Ошибка сохранения")
+        updated_count += 1
     
     return updated_count
 
@@ -1669,7 +1658,6 @@ def get_report_menu(message):
     bot.register_next_step_handler(msg, generate_monthly_report)
 
 def generate_monthly_report(message):
-    """Генерирует отчёт с цветовой индикацией прогулов, учитывая последние отметки"""
     try:
         if message.text.lower() == 'текущий':
             month_year = datetime.date.today().strftime("%m.%Y")
@@ -1685,13 +1673,8 @@ def generate_monthly_report(message):
             return
         
         df = pd.DataFrame(records)
-        
-        # Проверяем наличие колонки с временем
-        has_time = 'Время' in df.columns
-        
         df['Дата'] = pd.to_datetime(df['Дата'], format='%d.%m.%Y', errors='coerce')
         
-        # Фильтруем по месяцу
         mask = (df['Дата'].dt.month == month) & (df['Дата'].dt.year == year)
         filtered = df[mask]
         
@@ -1699,72 +1682,47 @@ def generate_monthly_report(message):
             bot.send_message(message.chat.id, f"📭 Нет данных за {month_year}")
             return
         
-        # Получаем список всех студентов
         all_students_data = cache.get_students()
         all_students = [s[1] for s in all_students_data[1:] if len(s) >= 2]
         
-        # Получаем все уникальные даты в месяце
         all_dates = sorted(filtered['Дата'].dt.strftime('%d.%m.%Y').unique())
         
-        # ========== ЛИСТ ПОСЕЩАЕМОСТИ ==========
+        # ЛИСТ ПОСЕЩАЕМОСТИ
         attendance_matrix = []
-        
         for student in all_students:
             row = {'Студент': student}
             student_records = filtered[filtered['Студент'] == student]
             
             for date in all_dates:
-                # Получаем все записи для этого студента на эту дату
                 day_records = student_records[student_records['Дата'].dt.strftime('%d.%m.%Y') == date]
-                
                 if not day_records.empty:
-                    # Если есть время, сортируем по времени (последнее - самое новое)
-                    if has_time:
-                        day_records = day_records.sort_values('Время', ascending=False)
-                    
-                    # Берём последнюю запись
-                    last_status = day_records.iloc[0]['Статус']
-                    
-                    if last_status == 'Присутствовал':
+                    status = day_records.iloc[0]['Статус']
+                    if status == 'Присутствовал':
                         row[date] = '✅'
-                    elif last_status == 'Отсутствовал':
+                    elif status == 'Отсутствовал':
                         row[date] = '❌'
-                    elif last_status == 'Болел':
+                    elif status == 'Болел':
                         row[date] = '🤒'
-                    elif last_status == 'Уважительная причина':
+                    elif status == 'Уважительная причина':
                         row[date] = '📄'
                     else:
-                        row[date] = last_status
+                        row[date] = status
                 else:
                     row[date] = ''
-            
             attendance_matrix.append(row)
         
         df_attendance = pd.DataFrame(attendance_matrix)
         
-        # ========== ЛИСТ СТАТИСТИКИ ==========
+        # ЛИСТ СТАТИСТИКИ
         stats_data = []
-        
         for student in all_students:
             student_records = filtered[filtered['Студент'] == student]
             
-            # Группируем по датам и берём последнюю запись для каждой даты
-            latest_by_date = {}
-            for _, record in student_records.iterrows():
-                date_key = record['Дата'].strftime('%d.%m.%Y')
-                
-                # Если этой даты ещё нет в словаре или запись новее
-                if date_key not in latest_by_date:
-                    latest_by_date[date_key] = record
-                elif has_time and record['Время'] > latest_by_date[date_key]['Время']:
-                    latest_by_date[date_key] = record
-            
-            # Считаем статистику по последним записям
-            total_classes = len(latest_by_date)
-            present = sum(1 for r in latest_by_date.values() if r['Статус'] == 'Присутствовал')
-            unexcused = sum(1 for r in latest_by_date.values() if r['Статус'] == 'Отсутствовал')
-            sick = sum(1 for r in latest_by_date.values() if r['Статус'] == 'Болел')
-            excused = sum(1 for r in latest_by_date.values() if r['Статус'] == 'Уважительная причина')
+            total_classes = len(student_records)
+            present = len(student_records[student_records['Статус'] == 'Присутствовал'])
+            unexcused = len(student_records[student_records['Статус'] == 'Отсутствовал'])
+            sick = len(student_records[student_records['Статус'] == 'Болел'])
+            excused = len(student_records[student_records['Статус'] == 'Уважительная причина'])
             
             attendance_rate = round(present / total_classes * 100, 1) if total_classes > 0 else 0
             
@@ -1780,80 +1738,39 @@ def generate_monthly_report(message):
         
         df_stats = pd.DataFrame(stats_data)
         
-        # ========== ИТОГИ ==========
-        total_unexcused = df_stats['❌ ПРОГУЛЫ'].sum()
-        students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛЫ'] > 0])
-        
-        # ========== СОЗДАНИЕ EXCEL ==========
+        # СОЗДАНИЕ EXCEL
         output = BytesIO()
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Записываем листы
             df_attendance.to_excel(writer, sheet_name='Посещаемость', index=False)
             df_stats.to_excel(writer, sheet_name='Статистика', index=False)
             
-            # Причины пропусков
             reasons_df = filtered[filtered['Причина'] != '-']
             if not reasons_df.empty:
-                # Для причин тоже берём последние записи? 
-                # Обычно нужно показывать все причины, поэтому оставляем как есть
                 reasons_df = reasons_df[['Дата', 'Пара', 'Студент', 'Статус', 'Причина']]
-                # Сортируем по дате для удобства
-                reasons_df = reasons_df.sort_values('Дата')
                 reasons_df.to_excel(writer, sheet_name='Причины', index=False)
             
             workbook = writer.book
-            worksheet_att = writer.sheets['Посещаемость']
             worksheet_stats = writer.sheets['Статистика']
             
-            # === ФОРМАТИРОВАНИЕ ===
+            # НАСТРОЙКА ШИРИНЫ СТОЛБЦОВ
+            worksheet_stats.column_dimensions['A'].width = 25
+            worksheet_stats.column_dimensions['B'].width = 15
+            worksheet_stats.column_dimensions['C'].width = 18
+            worksheet_stats.column_dimensions['D'].width = 15
+            worksheet_stats.column_dimensions['E'].width = 12
+            worksheet_stats.column_dimensions['F'].width = 20
+            worksheet_stats.column_dimensions['G'].width = 15
             
-            # Ширина столбцов в статистике
-            worksheet_stats.column_dimensions['A'].width = 25  # Студент
-            worksheet_stats.column_dimensions['B'].width = 15  # Всего занятий
-            worksheet_stats.column_dimensions['C'].width = 18  # Присутствовал
-            worksheet_stats.column_dimensions['D'].width = 15  # ПРОГУЛЫ
-            worksheet_stats.column_dimensions['E'].width = 12  # Болел
-            worksheet_stats.column_dimensions['F'].width = 20  # Уважительная причина
-            worksheet_stats.column_dimensions['G'].width = 15  # % посещения
+            # ЦВЕТОВАЯ ИНДИКАЦИЯ
+            from openpyxl.styles import PatternFill
             
-            # Ширина столбцов в посещаемости
-            worksheet_att.column_dimensions['A'].width = 25  # Студент
-            for col in range(2, len(all_dates) + 2):
-                col_letter = get_column_letter(col)
-                worksheet_att.column_dimensions[col_letter].width = 12  # Даты
+            green_fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
+            yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+            red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
             
-            # Заголовки (жирные, синие)
-            header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
-            header_font = Font(color='FFFFFF', bold=True)
-            
-            # Форматируем заголовки в статистике
-            for col in range(1, 8):
-                col_letter = get_column_letter(col)
-                cell = worksheet_stats[f'{col_letter}1']
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal='center')
-            
-            # Форматируем заголовки в посещаемости
-            worksheet_att['A1'].fill = header_fill
-            worksheet_att['A1'].font = header_font
-            
-            for col in range(2, len(all_dates) + 2):
-                col_letter = get_column_letter(col)
-                cell = worksheet_att[f'{col_letter}1']
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal='center')
-            
-            # Цветовая индикация для прогулов
-            green_fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')  # Без заливки (0 прогулов)
-            yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Жёлтый (≤ 10)
-            red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')     # Красный (> 10)
-            
-            # Применяем форматирование к столбцу D (ПРОГУЛЫ)
             for row in range(2, len(df_stats) + 2):
-                cell = worksheet_stats.cell(row=row, column=4)  # Столбец D
+                cell = worksheet_stats.cell(row=row, column=4)
                 if cell.value is not None:
                     if cell.value == 0:
                         cell.fill = green_fill
@@ -1862,13 +1779,24 @@ def generate_monthly_report(message):
                     else:
                         cell.fill = red_fill
             
-            # Автофильтр
+            # ЗАГОЛОВКИ
+            header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+            header_font = Font(color='FFFFFF', bold=True)
+            
+            for col in range(1, 8):
+                col_letter = get_column_letter(col)
+                cell = worksheet_stats[f'{col_letter}1']
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center')
+            
             worksheet_stats.auto_filter.ref = worksheet_stats.dimensions
-            worksheet_att.auto_filter.ref = worksheet_att.dimensions
         
         output.seek(0)
         
-        # Текстовая сводка
+        total_unexcused = df_stats['❌ ПРОГУЛЫ'].sum()
+        students_with_absences = len(df_stats[df_stats['❌ ПРОГУЛЫ'] > 0])
+        
         caption = (
             f"📊 *ОТЧЁТ ЗА {month_year}*\n\n"
             f"👥 *Группа:* {GROUP_NAME}\n"
@@ -1879,8 +1807,7 @@ def generate_monthly_report(message):
             f"*Цветовая индикация:*\n"
             f"🟢 0 прогулов — без заливки\n"
             f"🟡 ≤ 10 прогулов — жёлтый\n"
-            f"🔴 > 10 прогулов — красный\n\n"
-            f"*В отчёте учтены последние изменения статусов*"
+            f"🔴 > 10 прогулов — красный"
         )
         
         bot.send_chat_action(message.chat.id, 'upload_document')
@@ -1896,7 +1823,6 @@ def generate_monthly_report(message):
         bot.send_message(message.chat.id, "❌ Неправильный формат! Используйте ММ.ГГГГ")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка генерации отчёта: {str(e)}")
-        print(f"❌ Детали ошибки: {e}")
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
@@ -1915,7 +1841,6 @@ if __name__ == "__main__":
     print(f"✅ Больничный на период (перезаписывает старые отметки)")
     print(f"✅ Показывает только текущий месяц")
     print(f"✅ Показывает все неотмеченные пары (включая прошедшие)")
-    print(f"✅ Отчёт учитывает последние изменения статусов")
     print(f"✅ Расписание с названиями пар")
     print(f"✅ Тип недели: нижняя = нечётные недели")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
