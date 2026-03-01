@@ -140,8 +140,11 @@ class ScheduleManager:
         return lessons
     
     def get_next_unmarked_lesson(self, year, month, marked_lessons, subgroup='all'):
-        """Находит следующую неотмеченную пару"""
+        """Находит следующую неотмеченную пару в указанном месяце"""
         all_lessons = self.get_all_lessons_in_month(year, month, subgroup)
+        
+        # Сортируем по дате (сначала старые)
+        all_lessons.sort(key=lambda x: x['date'])
         
         for lesson in all_lessons:
             date_str = lesson['date'].strftime("%d.%m.%Y")
@@ -502,7 +505,7 @@ def show_status(message):
     year = today.year
     month = today.month
     
-    # Получаем все пары в месяце из расписания
+    # Получаем все пары в текущем месяце
     all_lessons = schedule_manager.get_all_lessons_in_month(year, month, user['selected_subgroup'])
     
     # Получаем отмеченные пары
@@ -512,7 +515,6 @@ def show_status(message):
     marked_count = len(marked_lessons)
     remaining = total - marked_count
     
-    # Название месяца по-русски
     month_names = {
         1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
         5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -520,10 +522,9 @@ def show_status(message):
     }
     month_name = month_names[month]
     
-    # Находим следующую неотмеченную пару
+    # Ищем следующую неотмеченную пару (в текущем месяце, даже если в прошлом)
     next_lesson = schedule_manager.get_next_unmarked_lesson(year, month, marked_lessons, user['selected_subgroup'])
     
-    # Формируем сообщение
     status_text = f"📊 *СОСТОЯНИЕ ГРУППЫ*\n\n"
     status_text += f"📅 *{month_name} {year}*\n"
     status_text += f"✅ Отмечено: {marked_count} из {total} пар\n"
@@ -539,14 +540,13 @@ def show_status(message):
         status_text += f"📅 {next_lesson['date'].strftime('%d.%m')} ({day_name}) "
         status_text += f"{next_lesson['lesson']} пара - {next_lesson['subject']}\n\n"
         
-        # Кнопка для перехода
         markup = telebot.types.InlineKeyboardMarkup()
         markup.add(telebot.types.InlineKeyboardButton(
             "⏩ Перейти к этой паре",
             callback_data=f"goto_{next_lesson['date'].strftime('%d.%m.%Y')}_{next_lesson['lesson']}"
         ))
     else:
-        status_text += f"🎉 *Все пары за месяц отмечены!*\n\n"
+        status_text += f"🎉 *Все пары за {month_name} отмечены!*\n\n"
         markup = None
     
     bot.send_message(message.chat.id, status_text, parse_mode='Markdown', reply_markup=markup)
@@ -957,7 +957,9 @@ def get_existing_marks(date, lesson):
         return {}
 
 # ==================== СОХРАНЕНИЕ ЗАПИСИ ====================
-def save_attendance_record(date, lessons, student, status, reason):
+def save_attendance_record(date, lessons, student, status, reason, force_overwrite=True):
+    """Сохраняет запись о посещении для одной или нескольких пар
+    Если force_overwrite=True, удаляет старые записи перед сохранением"""
     try:
         if isinstance(lessons, (list, set)):
             lesson_list = list(lessons)
@@ -971,6 +973,7 @@ def save_attendance_record(date, lessons, student, status, reason):
         rows_to_add = []
         
         for lesson in lesson_list:
+            # Всегда удаляем старые записи для этого студента на эту дату и пару
             for i, row in enumerate(records):
                 if (i > 0 and len(row) >= 4 and
                     str(row[0]) == date and
@@ -1009,19 +1012,22 @@ def save_attendance_record(date, lessons, student, status, reason):
 
 # ==================== ПРИМЕНЕНИЕ БОЛЬНИЧНОГО НА ПЕРИОД ====================
 def apply_sick_leave(user, student_name, start_date, end_date):
-    """Применяет статус 'Болел' ко всем парам в указанном диапазоне"""
+    """Применяет статус 'Болел' ко всем парам в указанном диапазоне,
+    перезаписывая любые предыдущие отметки"""
     lessons_in_range = schedule_manager.get_lessons_in_range(
         start_date, end_date, user['selected_subgroup']
     )
     
     updated_count = 0
     for lesson in lessons_in_range:
+        # Сохраняем с force_overwrite=True, чтобы перезаписать старые отметки
         save_attendance_record(
             lesson['date'].strftime("%d.%m.%Y"),
             [lesson['lesson']],
             student_name,
             'Болел',
-            '-'
+            '-',
+            force_overwrite=True
         )
         updated_count += 1
     
@@ -1041,7 +1047,7 @@ def sick_leave_period(call):
         f"Формат: `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`\n"
         f"Пример: `01.03.2026-10.03.2026`\n\n"
         f"👥 Будет применено для {len(user['selected_students'])} студентов\n"
-        f"📊 Система автоматически отметит все пары в этом периоде"
+        f"📊 Система автоматически перезапишет все отметки в этом периоде на 'Болел'"
     )
     bot.register_next_step_handler(msg, process_sick_leave)
 
@@ -1427,7 +1433,8 @@ def quick_apply_status(call):
                 user['selected_lessons'],
                 student_name,
                 info['text'],
-                "-"
+                "-",
+                force_overwrite=True
             )
     
     user['selected_students'] = set()
@@ -1464,7 +1471,8 @@ def save_reason_for_selected(message):
                 user['selected_lessons'],
                 student_name,
                 pending['status_text'],
-                reason
+                reason,
+                force_overwrite=True
             )
     
     user['selected_students'] = set()
@@ -1830,7 +1838,9 @@ if __name__ == "__main__":
     print(f"✅ Кнопка 'Состояние' с быстрым переходом")
     print(f"✅ Автопереход к следующей паре")
     print(f"✅ Прогресс при старте")
-    print(f"✅ Больничный на период")
+    print(f"✅ Больничный на период (перезаписывает старые отметки)")
+    print(f"✅ Показывает только текущий месяц")
+    print(f"✅ Показывает все неотмеченные пары (включая прошедшие)")
     print(f"✅ Расписание с названиями пар")
     print(f"✅ Тип недели: нижняя = нечётные недели")
     print(f"✅ УЛУЧШЕННОЕ КЭШИРОВАНИЕ - АКТИВНО")
